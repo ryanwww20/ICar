@@ -1,0 +1,2 @@
+/work/b12901015/car/data/av2_mock/sensor/val/log_001/sensors/cameras/stereo_front_left/1000000000.jpg /work/b12901015/car/data/av2_mock/sensor/val/log_001/sensors/cameras/stereo_front_right/1000000000.jpg
+/work/b12901015/car/data/av2_mock/sensor/val/log_001/sensors/cameras/stereo_front_left/1000000100.jpg /work/b12901015/car/data/av2_mock/sensor/val/log_001/sensors/cameras/stereo_front_right/1000000100.jpg

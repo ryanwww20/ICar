@@ -8,6 +8,8 @@ import sys
 from pathlib import Path
 
 SCRIPT_DIR = Path(__file__).resolve().parent
+REPO_ROOT = SCRIPT_DIR.parent
+DEFAULT_AV2_ROOT = REPO_ROOT / "dust3r/data/AV2/val"
 if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 
@@ -26,8 +28,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--av2-root",
         type=Path,
-        required=True,
-        help="Root path of Argoverse 2 Sensor Dataset",
+        default=DEFAULT_AV2_ROOT,
+        help=f"Root path of Argoverse 2 Sensor Dataset (default: {DEFAULT_AV2_ROOT})",
     )
     parser.add_argument(
         "--split",

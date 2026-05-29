@@ -3,6 +3,13 @@
 
 from __future__ import annotations
 
+import os
+
+# Headless servers often lack libGL.so.1; use non-interactive backends before
+# importing OpenCV/matplotlib-dependent DUSt3R modules.
+os.environ.setdefault("MPLBACKEND", "Agg")
+os.environ.setdefault("OPENCV_IO_ENABLE_OPENEXR", "0")
+
 import argparse
 import json
 import shutil
@@ -42,6 +49,57 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+DEFAULT_HF_MODEL = "naver/DUSt3R_ViTLarge_BaseDecoder_512_dpt"
+DEFAULT_LOCAL_CHECKPOINT = DUST3R_ROOT / "checkpoints" / "DUSt3R_ViTLarge_BaseDecoder_512_dpt.pth"
+CHECKPOINT_URL = (
+    "https://download.europe.naverlabs.com/ComputerVision/DUSt3R/"
+    "DUSt3R_ViTLarge_BaseDecoder_512_dpt.pth"
+)
+
+
+def resolve_model_path(model_path: str | None) -> str:
+    if model_path is None:
+        if DEFAULT_LOCAL_CHECKPOINT.is_file() and DEFAULT_LOCAL_CHECKPOINT.stat().st_size > 0:
+            return str(DEFAULT_LOCAL_CHECKPOINT.resolve())
+        return DEFAULT_HF_MODEL
+
+    path = Path(model_path).expanduser()
+    candidates: list[Path] = []
+
+    def add(candidate: Path) -> None:
+        resolved = candidate.expanduser()
+        if resolved not in candidates:
+            candidates.append(resolved)
+
+    if path.is_absolute():
+        add(path)
+    else:
+        add(Path.cwd() / path)
+        add(REPO_ROOT / path)
+        if path.parts and path.parts[0] == "dust3r" and len(path.parts) > 1:
+            add(DUST3R_ROOT / Path(*path.parts[1:]))
+        add(DUST3R_ROOT / path)
+        add(DUST3R_ROOT / "checkpoints" / path.name)
+        add(path)
+
+    for candidate in candidates:
+        if candidate.is_file() and candidate.stat().st_size > 0:
+            return str(candidate.resolve())
+
+    if path.suffix == ".pth":
+        searched = ", ".join(str(c.resolve()) for c in candidates)
+        raise FileNotFoundError(
+            "Local checkpoint not found.\n"
+            f"  Requested: {model_path}\n"
+            f"  Searched: {searched}\n"
+            "Download it with:\n"
+            f"  mkdir -p {DEFAULT_LOCAL_CHECKPOINT.parent}\n"
+            f"  wget {CHECKPOINT_URL} -O {DEFAULT_LOCAL_CHECKPOINT}"
+        )
+
+    return model_path
+
+
 def load_pairs_json(path: Path) -> list[dict]:
     with path.open("r", encoding="utf-8") as f:
         payload = json.load(f)
@@ -59,6 +117,9 @@ def resolve_pair_images(pair: dict) -> tuple[Path, Path]:
 
 
 def save_depth_png(depth: np.ndarray, path: Path) -> None:
+    import matplotlib
+
+    matplotlib.use("Agg", force=True)
     import matplotlib.pyplot as plt
 
     depth = np.asarray(depth, dtype=np.float32)
@@ -249,7 +310,7 @@ def main() -> int:
         import torch
         from dust3r.model import AsymmetricCroCo3DStereo
 
-        model_path = args.model_path or "naver/DUSt3R_ViTLarge_BaseDecoder_512_dpt"
+        model_path = resolve_model_path(args.model_path)
         if args.device.startswith("cuda") and not torch.cuda.is_available():
             print(
                 "WARNING: CUDA not available, falling back to CPU.",

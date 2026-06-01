@@ -27,7 +27,15 @@ assert version.parse(hf_version_number) >= version.parse("0.22.0"), ("Outdated h
 def load_model(model_path, device, verbose=True):
     if verbose:
         print('... loading model from', model_path)
-    ckpt = torch.load(model_path, map_location='cpu')
+    load_kwargs = {"map_location": "cpu"}
+    # PyTorch 2.6+ defaults to weights_only=True, but DUSt3R checkpoints store
+    # argparse.Namespace metadata and must be loaded with full pickle support.
+    if hasattr(torch.serialization, "add_safe_globals"):
+        load_kwargs["weights_only"] = False
+    try:
+        ckpt = torch.load(model_path, **load_kwargs)
+    except TypeError:
+        ckpt = torch.load(model_path, map_location="cpu")
     args = ckpt['args'].model.replace("ManyAR_PatchEmbed", "PatchEmbedDust3R")
     if 'landscape_only' not in args:
         args = args[:-1] + ', landscape_only=False)'

@@ -1,0 +1,22 @@
+{
+  "pair_index": 0,
+  "log_id": "log_001",
+  "pair_type": "stereo",
+  "camera1": "stereo_front_left",
+  "camera2": "stereo_front_right",
+  "image1": "/work/b12901015/car/data/av2_mock/sensor/val/log_001/sensors/cameras/stereo_front_left/1000000000.jpg",
+  "image2": "/work/b12901015/car/data/av2_mock/sensor/val/log_001/sensors/cameras/stereo_front_right/1000000000.jpg",
+  "timestamp1": "1000000000",
+  "timestamp2": "1000000000",
+  "dust3r_config": {
+    "model_path": null,
+    "device": "cuda",
+    "batch_size": 1,
+    "image_size": 512,
+    "save_pointcloud": true,
+    "save_depth": true,
+    "save_camera_json": true
+  },
+  "processed_at": "2026-05-29T15:00:41.926923+00:00",
+  "status": "dry_run"
+}

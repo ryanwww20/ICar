@@ -8,19 +8,40 @@ set -euo pipefail
 # Usage examples:
 #
 # 1. List available logs:
-#   bash download_av2_logs.sh --list-only
+#   bash scripts/av2_download.sh --list-only
 #
 # 2. Download first 2 logs, stereo cameras only:
-#   bash download_av2_logs.sh --num-logs 2 --mode stereo
+#   bash scripts/av2_download.sh --num-logs 2 --mode stereo
 #
 # 3. Download first 2 full logs:
-#   bash download_av2_logs.sh --num-logs 2 --mode full
+#   bash scripts/av2_download.sh --num-logs 2 --mode full
 #
 # 4. Save available log IDs to file:
-#   bash download_av2_logs.sh --save-log-list av2_val_logs.txt
+#   bash scripts/av2_download.sh --save-log-list av2_val_logs.txt
 #
 # 5. Download from a prepared log list:
-#   bash download_av2_logs.sh --log-list av2_val_logs.txt --num-logs 3 --mode stereo
+#   bash scripts/av2_download.sh --log-list av2_val_logs.txt --num-logs 3 --mode stereo
+#
+# 6. Download ring cameras only:
+#   bash scripts/av2_download.sh \
+#     --num-logs 2 \
+#     --mode ring \
+#     --out-dir dust3r/data/AV2
+#
+# 7. Download stereo + ring cameras:
+#   bash scripts/av2_download.sh \
+#     --num-logs 2 \
+#     --mode stereo_ring \
+#     --out-dir dust3r/data/AV2
+#
+# Check downloaded images:
+#   find dust3r/data/AV2/val -path "*ring_front_center*" -name "*.jpg" | head
+#
+# Count images per ring camera:
+#   for CAM in ring_front_center ring_front_left ring_front_right ring_side_left ring_side_right ring_rear_left ring_rear_right; do
+#     echo "$CAM:"
+#     find dust3r/data/AV2/val -path "*/$CAM/*" -name "*.jpg" | wc -l
+#   done
 #
 # Requirements:
 #   conda install -c conda-forge s5cmd -y
@@ -32,7 +53,7 @@ set -euo pipefail
 SPLIT="val"
 OUT_DIR="$HOME/data/av2/sensor"
 NUM_LOGS=1
-MODE="stereo"      # options: stereo, full
+MODE="stereo"      # options: stereo, ring, stereo_ring, full
 LIST_ONLY=false
 SAVE_LOG_LIST=""
 LOG_LIST_FILE=""
@@ -74,13 +95,17 @@ while [[ $# -gt 0 ]]; do
       ;;
     -h|--help)
       echo "Usage:"
-      echo "  bash download_av2_logs.sh [--split val|train|test] [--out-dir PATH] [--num-logs N] [--mode stereo|full]"
+      echo "  bash scripts/av2_download.sh [--split val|train|test] [--out-dir PATH] [--num-logs N] [--mode stereo|ring|stereo_ring|full]"
       echo ""
       echo "Options:"
       echo "  --list-only              Only list available LOG_IDs"
       echo "  --save-log-list FILE     Save available LOG_IDs to FILE"
       echo "  --log-list FILE          Read LOG_IDs from FILE instead of querying S3"
-      echo "  --mode stereo|full       stereo = only stereo cameras + calibration; full = entire log"
+      echo "  --mode stereo|ring|stereo_ring|full"
+      echo "      stereo:      download stereo_front_left and stereo_front_right only"
+      echo "      ring:        download all 7 ring cameras only"
+      echo "      stereo_ring: download stereo cameras and ring cameras"
+      echo "      full:        download entire log"
       exit 0
       ;;
     *)
@@ -100,8 +125,8 @@ if ! command -v s5cmd >/dev/null 2>&1; then
   exit 1
 fi
 
-if [[ "$MODE" != "stereo" && "$MODE" != "full" ]]; then
-  echo "Error: --mode must be either 'stereo' or 'full'"
+if [[ "$MODE" != "stereo" && "$MODE" != "ring" && "$MODE" != "stereo_ring" && "$MODE" != "full" ]]; then
+  echo "Error: --mode must be one of: stereo, ring, stereo_ring, full"
   exit 1
 fi
 
@@ -260,6 +285,96 @@ download_stereo_log() {
     "$base_dst/"
 }
 
+download_ring_log() {
+  local log_id="$1"
+  local base_src="$S3_ROOT/$SPLIT/$log_id"
+  local base_dst="$OUT_DIR/$SPLIT/$log_id"
+
+  echo ""
+  echo "[RING] Downloading log: $log_id"
+  echo "SRC base: $base_src"
+  echo "DST base: $base_dst"
+
+  mkdir -p "$base_dst/sensors/cameras"
+
+  local cameras=(
+    ring_front_center
+    ring_front_left
+    ring_front_right
+    ring_side_left
+    ring_side_right
+    ring_rear_left
+    ring_rear_right
+  )
+
+  for cam in "${cameras[@]}"; do
+    echo "Downloading camera: $cam"
+    mkdir -p "$base_dst/sensors/cameras/$cam"
+
+    s5cmd --no-sign-request cp \
+      "$base_src/sensors/cameras/$cam/*" \
+      "$base_dst/sensors/cameras/$cam/"
+  done
+
+  echo "Downloading calibration..."
+  mkdir -p "$base_dst/calibration"
+
+  s5cmd --no-sign-request cp \
+    "$base_src/calibration/*" \
+    "$base_dst/calibration/"
+
+  echo "Downloading city_SE3_egovehicle.feather..."
+  s5cmd --no-sign-request cp \
+    "$base_src/city_SE3_egovehicle.feather" \
+    "$base_dst/"
+}
+
+download_stereo_ring_log() {
+  local log_id="$1"
+  local base_src="$S3_ROOT/$SPLIT/$log_id"
+  local base_dst="$OUT_DIR/$SPLIT/$log_id"
+
+  echo ""
+  echo "[STEREO + RING] Downloading log: $log_id"
+  echo "SRC base: $base_src"
+  echo "DST base: $base_dst"
+
+  mkdir -p "$base_dst/sensors/cameras"
+
+  local cameras=(
+    stereo_front_left
+    stereo_front_right
+    ring_front_center
+    ring_front_left
+    ring_front_right
+    ring_side_left
+    ring_side_right
+    ring_rear_left
+    ring_rear_right
+  )
+
+  for cam in "${cameras[@]}"; do
+    echo "Downloading camera: $cam"
+    mkdir -p "$base_dst/sensors/cameras/$cam"
+
+    s5cmd --no-sign-request cp \
+      "$base_src/sensors/cameras/$cam/*" \
+      "$base_dst/sensors/cameras/$cam/"
+  done
+
+  echo "Downloading calibration..."
+  mkdir -p "$base_dst/calibration"
+
+  s5cmd --no-sign-request cp \
+    "$base_src/calibration/*" \
+    "$base_dst/calibration/"
+
+  echo "Downloading city_SE3_egovehicle.feather..."
+  s5cmd --no-sign-request cp \
+    "$base_src/city_SE3_egovehicle.feather" \
+    "$base_dst/"
+}
+
 # -----------------------------
 # Main loop
 # -----------------------------
@@ -273,8 +388,12 @@ for (( i=0; i<NUM_LOGS; i++ )); do
 
   if [[ "$MODE" == "full" ]]; then
     download_full_log "$LOG_ID"
-  else
+  elif [[ "$MODE" == "stereo" ]]; then
     download_stereo_log "$LOG_ID"
+  elif [[ "$MODE" == "ring" ]]; then
+    download_ring_log "$LOG_ID"
+  elif [[ "$MODE" == "stereo_ring" ]]; then
+    download_stereo_ring_log "$LOG_ID"
   fi
 done
 

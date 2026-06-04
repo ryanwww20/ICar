@@ -1,4 +1,21 @@
 __pycache__/
 data/
-vggt/ 
+vggt/
 outputs/
+
+v1.0-mini/
+.v1.0-mini.txt
+depth_recon.__pycache__
+
+# car/ 根目錄檔案（不含資料夾）
+LICENSE
+depth_recon.py
+fill_floor_simple.py
+input.ply
+output_filled.ply
+temporal.ply
+test1.ply
+timeflow.py
+v1.0-mini.tgz
+vggt_6cam.ply
+vggt_test1.ply

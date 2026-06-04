@@ -26,21 +26,21 @@ set -euo pipefail
 #   bash scripts/av2_download.sh \
 #     --num-logs 2 \
 #     --mode ring \
-#     --out-dir dust3r/data/AV2
+#     --out-dir vggt/data/AV2
 #
 # 7. Download stereo + ring cameras:
 #   bash scripts/av2_download.sh \
 #     --num-logs 2 \
 #     --mode stereo_ring \
-#     --out-dir dust3r/data/AV2
+#     --out-dir vggt/data/AV2
 #
 # Check downloaded images:
-#   find dust3r/data/AV2/val -path "*ring_front_center*" -name "*.jpg" | head
+#   find vggt/data/AV2/val -path "*ring_front_center*" -name "*.jpg" | head
 #
 # Count images per ring camera:
 #   for CAM in ring_front_center ring_front_left ring_front_right ring_side_left ring_side_right ring_rear_left ring_rear_right; do
 #     echo "$CAM:"
-#     find dust3r/data/AV2/val -path "*/$CAM/*" -name "*.jpg" | wc -l
+#     find vggt/data/AV2/val -path "*/$CAM/*" -name "*.jpg" | wc -l
 #   done
 #
 # Requirements:

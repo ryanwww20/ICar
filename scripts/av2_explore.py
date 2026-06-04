@@ -9,7 +9,7 @@ from pathlib import Path
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 REPO_ROOT = SCRIPT_DIR.parent
-DEFAULT_AV2_ROOT = REPO_ROOT / "dust3r/data/AV2/val"
+DEFAULT_AV2_ROOT = REPO_ROOT / "vggt/data/AV2"
 if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 

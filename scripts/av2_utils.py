@@ -260,6 +260,80 @@ def resolve_ring_adjacent_pairs(camera_names: list[str]) -> list[tuple[str, str]
     return resolved
 
 
+def format_scene_id(index: int) -> str:
+    """Human-readable scene label, e.g. scene-0, scene-1."""
+    if index < 0:
+        raise ValueError(f"scene index must be >= 0, got {index}")
+    return f"scene-{index}"
+
+
+def parse_scene_id(value: str | int) -> int:
+    """Accept 0, '0', 'scene-0'."""
+    if isinstance(value, int):
+        if value < 0:
+            raise ValueError(f"scene index must be >= 0, got {value}")
+        return value
+    text = str(value).strip().lower()
+    if text.startswith("scene-"):
+        text = text[len("scene-") :]
+    if not text.isdigit():
+        raise ValueError(f"Invalid scene id: {value!r} (expected e.g. 0 or scene-0)")
+    index = int(text)
+    if index < 0:
+        raise ValueError(f"scene index must be >= 0, got {index}")
+    return index
+
+
+def build_scene_mapping(split_root: Path) -> list[dict[str, str | int]]:
+    """Map scene-N to AV2 log UUIDs (stable sorted order)."""
+    logs = find_log_dirs(split_root)
+    return [
+        {
+            "scene_id": i,
+            "scene_label": format_scene_id(i),
+            "log_id": log_dir.name,
+            "log_path": str(log_dir.resolve()),
+        }
+        for i, log_dir in enumerate(logs)
+    ]
+
+
+def resolve_log_dir(
+    split_root: Path,
+    *,
+    scene_id: int | None = None,
+    log_id: str | None = None,
+) -> tuple[Path, str, int]:
+    """
+    Resolve AV2 log directory.
+
+    Returns (log_dir, scene_label, scene_index).
+    --log-id (UUID) overrides --scene-id when both could apply; scene index is
+    looked up from the mapping when log_id is given.
+    """
+    split_root = split_root.resolve()
+    logs = find_log_dirs(split_root)
+    if not logs:
+        raise FileNotFoundError(f"No logs with cameras found under {split_root}")
+
+    if log_id:
+        for i, log_dir in enumerate(logs):
+            if log_dir.name == log_id:
+                return log_dir, format_scene_id(i), i
+        log_dir = split_root / log_id
+        if log_dir.is_dir() and discover_cameras_in_log(log_dir):
+            return log_dir.resolve(), "scene-unknown", -1
+        raise FileNotFoundError(f"log-id not found under {split_root}: {log_id}")
+
+    index = 0 if scene_id is None else parse_scene_id(scene_id)
+    if index >= len(logs):
+        raise IndexError(
+            f"scene-{index} out of range: split has {len(logs)} log(s) "
+            f"(valid: scene-0 .. scene-{len(logs) - 1})"
+        )
+    return logs[index], format_scene_id(index), index
+
+
 def choose_default_camera(camera_names: list[str]) -> str | None:
     if not camera_names:
         return None

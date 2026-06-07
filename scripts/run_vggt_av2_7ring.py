@@ -92,7 +92,17 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--device", type=str, default=None)
     parser.add_argument("--conf-thresh", type=float, default=0.5)
     parser.add_argument("--pixel-stride", type=int, default=2)
-    parser.add_argument("--voxel-size", type=float, default=0.10)
+    parser.add_argument(
+        "--voxel-size",
+        type=float,
+        default=0.10,
+        help="Voxel size (m) for downsampling. Use 0 to skip voxel step only.",
+    )
+    parser.add_argument(
+        "--no-cleanup",
+        action="store_true",
+        help="Skip voxel downsampling and outlier removal; save all filtered points.",
+    )
     parser.add_argument("--dry-run", action="store_true")
     return parser.parse_args()
 
@@ -247,6 +257,10 @@ def process_frame(
         "timestamp_ns": {cam: ts for cam, _, ts in views},
         "cameras": RING_CAMERAS,
         "image_paths": {cam: str(path) for cam, path, _ in views},
+        "no_cleanup": args.no_cleanup,
+        "voxel_size": args.voxel_size,
+        "conf_thresh": args.conf_thresh,
+        "pixel_stride": args.pixel_stride,
     }
     with (frame_dir / "metadata.json").open("w", encoding="utf-8") as f:
         json.dump(meta, f, indent=2, ensure_ascii=False)
@@ -279,7 +293,7 @@ def process_frame(
         args.conf_thresh,
         args.pixel_stride,
     )
-    print(f"[frame {frame_idx}] points before cleanup: {len(pts)}")
+    print(f"[frame {frame_idx}] points: {len(pts)}")
 
     if len(pts) > 0:
         import open3d as o3d
@@ -287,10 +301,15 @@ def process_frame(
         pcd = o3d.geometry.PointCloud()
         pcd.points = o3d.utility.Vector3dVector(pts)
         pcd.colors = o3d.utility.Vector3dVector(np.clip(cols, 0, 1))
-        if args.voxel_size > 0:
-            pcd = pcd.voxel_down_sample(args.voxel_size)
-        pcd, _ = pcd.remove_statistical_outlier(nb_neighbors=20, std_ratio=2.0)
-        print(f"[frame {frame_idx}] points after cleanup: {len(pcd.points)}")
+
+        if args.no_cleanup:
+            print(f"[frame {frame_idx}] cleanup disabled (--no-cleanup)")
+        else:
+            if args.voxel_size > 0:
+                pcd = pcd.voxel_down_sample(args.voxel_size)
+            pcd, _ = pcd.remove_statistical_outlier(nb_neighbors=20, std_ratio=2.0)
+            print(f"[frame {frame_idx}] points after cleanup: {len(pcd.points)}")
+
         o3d.io.write_point_cloud(str(frame_dir / "pointcloud.ply"), pcd)
     else:
         print(f"[frame {frame_idx}] WARNING: no points passed confidence filter")
@@ -369,6 +388,10 @@ def main() -> int:
         "num_frames": args.num_frames,
         "ring_cameras": list(RING_CAMERAS),
         "dry_run": args.dry_run,
+        "no_cleanup": args.no_cleanup,
+        "voxel_size": args.voxel_size,
+        "conf_thresh": args.conf_thresh,
+        "pixel_stride": args.pixel_stride,
     }
     with (out_dir / "run_summary.json").open("w", encoding="utf-8") as f:
         json.dump(run_summary, f, indent=2)

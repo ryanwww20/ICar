@@ -6,20 +6,31 @@ from __future__ import annotations
 import argparse
 import importlib.util
 from pathlib import Path
+import sys
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 POST_PROCESS_DIR = SCRIPT_DIR / "post_process"
 PLY_POST_PROCESS_PATH = POST_PROCESS_DIR / "ply_post-process.py"
+_PLY_POST_PROCESS_MODULE = "ply_post_process"
 
 
 def _load_ply_postprocess_module():
+    if _PLY_POST_PROCESS_MODULE in sys.modules:
+        return sys.modules[_PLY_POST_PROCESS_MODULE]
+
+    post_dir = str(POST_PROCESS_DIR)
+    if post_dir not in sys.path:
+        sys.path.insert(0, post_dir)
+
     spec = importlib.util.spec_from_file_location(
-        "ply_post_process",
+        _PLY_POST_PROCESS_MODULE,
         PLY_POST_PROCESS_PATH,
     )
     if spec is None or spec.loader is None:
         raise ImportError(f"Failed to load {PLY_POST_PROCESS_PATH}")
     module = importlib.util.module_from_spec(spec)
+    # Required before exec_module so @dataclass can resolve cls.__module__.
+    sys.modules[_PLY_POST_PROCESS_MODULE] = module
     spec.loader.exec_module(module)
     return module
 

@@ -1,9 +1,12 @@
 #!/usr/bin/env python3
 """
-Version A (relative / up-to-scale):
-Run VGGT on 7 Argoverse 2 ring cameras at the same frame index (one forward pass).
+Version B (metric):
+Run VGGT on 7 AV2 ring camera images at the same frame index (one forward pass).
 
-Uses VGGT world_points directly. See run_vggt_av2_7ring_metric.py for metric output.
+Estimates metric scale from AV2 camera baselines, then back-projects VGGT depth
+with AV2 intrinsics/extrinsics into city/world coordinates (meters).
+
+Output default: outputs/vggt_av2_7ring_metric/
 """
 
 from __future__ import annotations
@@ -11,10 +14,12 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import shutil
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
+import cv2
 import numpy as np
 
 os.environ.setdefault("MPLBACKEND", "Agg")
@@ -23,16 +28,20 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 REPO_ROOT = SCRIPT_DIR.parent
 VGGT_ROOT = REPO_ROOT / "vggt"
 DEFAULT_AV2_ROOT = REPO_ROOT / "vggt/data/AV2"
+VERSION_LABEL = "metric"
 
 if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 if str(VGGT_ROOT) not in sys.path:
     sys.path.insert(0, str(VGGT_ROOT))
 
+from av2_calibration_utils import (  # noqa: E402
+    RING_CAMERAS,
+    collect_seven_ring_views_metric,
+    load_log_calibration,
+)
 from av2_utils import (  # noqa: E402
     build_scene_mapping,
-    discover_cameras_in_log,
-    extract_timestamp,
     resolve_log_dir,
     resolve_split_root,
 )
@@ -41,25 +50,23 @@ from ply_postprocess_common import (  # noqa: E402
     maybe_postprocess_pointcloud,
 )
 from vggt_nuscenes_common import (  # noqa: E402
-    pointcloud_output_path,
     add_cleanup_args,
+    backproject_metric_points,
+    estimate_scale_from_camera_baselines,
+    load_vggt_model,
+    pointcloud_output_path,
+    run_vggt_multi,
+    save_depth_png,
     write_pointcloud,
-)
-
-RING_CAMERAS = (
-    "ring_front_center",
-    "ring_front_left",
-    "ring_front_right",
-    "ring_side_left",
-    "ring_side_right",
-    "ring_rear_left",
-    "ring_rear_right",
 )
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Run VGGT on 7 AV2 ring camera images at the same frame index."
+        description=(
+            "[Version B: metric] "
+            "Run VGGT on 7 AV2 ring cameras at the same frame with metric back-projection."
+        )
     )
     parser.add_argument(
         "--av2-root",
@@ -100,7 +107,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--output-dir",
         type=Path,
-        default=Path("outputs/vggt_av2_7ring"),
+        default=Path("outputs/vggt_av2_7ring_metric"),
+        help="Output root (default: outputs/vggt_av2_7ring_metric).",
     )
     parser.add_argument("--model-id", type=str, default="facebook/VGGT-1B")
     parser.add_argument("--device", type=str, default=None)
@@ -112,131 +120,6 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def collect_seven_ring_views(
-    log_dir: Path, frame_idx: int
-) -> list[tuple[str, Path, int]]:
-    """Return [(camera_name, image_path, timestamp_ns), ...] for 7 ring cameras."""
-    cameras = discover_cameras_in_log(log_dir)
-    missing = [name for name in RING_CAMERAS if name not in cameras]
-    if missing:
-        raise ValueError(
-            f"Log {log_dir.name} is missing ring cameras: {missing}. "
-            f"Available: {sorted(cameras.keys())}"
-        )
-
-    views: list[tuple[str, Path, int]] = []
-    min_count = min(len(cameras[name]) for name in RING_CAMERAS)
-    if frame_idx < 0 or frame_idx >= min_count:
-        raise ValueError(
-            f"frame-idx={frame_idx} out of range [0, {min_count - 1}] for log {log_dir.name}"
-        )
-
-    for name in RING_CAMERAS:
-        path = cameras[name][frame_idx]
-        views.append((name, path, extract_timestamp(path)))
-    return views
-
-
-def save_depth_png(path: Path, depth: np.ndarray) -> None:
-    import cv2
-
-    d = depth.astype(np.float32)
-    valid = np.isfinite(d) & (d > 0)
-    if not valid.any():
-        return
-    d_norm = np.zeros_like(d)
-    lo, hi = np.percentile(d[valid], [2, 98])
-    if hi <= lo:
-        hi = lo + 1e-6
-    d_norm[valid] = np.clip((d[valid] - lo) / (hi - lo), 0, 1)
-    cv2.imwrite(str(path), (d_norm * 255).astype(np.uint8))
-
-
-def world_points_to_ply(
-    world_points: np.ndarray,
-    conf: np.ndarray,
-    images_rgb: np.ndarray,
-    conf_thresh: float,
-    pixel_stride: int,
-) -> tuple[np.ndarray, np.ndarray]:
-    """Subsample fused world points and colors from VGGT outputs."""
-    # world_points: (S, H, W, 3), conf: (S, H, W), images_rgb: (S, 3, H, W) in [0,1]
-    s, h, w, _ = world_points.shape
-    pts_list = []
-    col_list = []
-
-    for i in range(s):
-        wp = world_points[i]
-        cf = conf[i]
-        img = images_rgb[i].transpose(1, 2, 0)  # HWC
-        vs = np.arange(0, h, pixel_stride)
-        us = np.arange(0, w, pixel_stride)
-        vv, uu = np.meshgrid(vs, us, indexing="ij")
-        pts = wp[vv, uu].reshape(-1, 3)
-        cc = cf[vv, uu].reshape(-1)
-        cols = img[vv, uu].reshape(-1, 3)
-        mask = (cc >= conf_thresh) & np.isfinite(pts).all(axis=1)
-        pts_list.append(pts[mask])
-        col_list.append(cols[mask])
-
-    if not pts_list:
-        return np.zeros((0, 3)), np.zeros((0, 3))
-    return np.concatenate(pts_list, axis=0), np.concatenate(col_list, axis=0)
-
-
-def run_vggt_seven(
-    image_paths: list[Path],
-    device: str,
-    model_id: str,
-) -> dict:
-    import torch
-    from vggt.models.vggt import VGGT
-    from vggt.utils.load_fn import load_and_preprocess_images
-    from vggt.utils.pose_enc import pose_encoding_to_extri_intri
-
-    dtype = (
-        torch.bfloat16
-        if device == "cuda" and torch.cuda.get_device_capability()[0] >= 8
-        else torch.float16
-    )
-
-    print(f"[vggt] loading model {model_id} on {device} ...")
-    model = VGGT.from_pretrained(model_id).to(device).eval()
-
-    paths = [str(p) for p in image_paths]
-    images = load_and_preprocess_images(paths).to(device)
-    print(f"[vggt] input shape: {tuple(images.shape)} ({len(paths)} views)")
-
-    with torch.no_grad():
-        if device == "cuda":
-            with torch.cuda.amp.autocast(dtype=dtype):
-                pred = model(images)
-        else:
-            pred = model(images.float())
-
-    proc_hw = (images.shape[-2], images.shape[-1])
-    extr, intr = pose_encoding_to_extri_intri(pred["pose_enc"], proc_hw)
-    extr = extr[0].cpu().numpy()
-    intr = intr[0].cpu().numpy()
-
-    depth = pred["depth"].squeeze(0).squeeze(-1).float().cpu().numpy()
-    depth_conf = pred["depth_conf"].squeeze(0).float().cpu().numpy()
-    world_points = pred["world_points"].squeeze(0).float().cpu().numpy()
-    world_conf = pred["world_points_conf"].squeeze(0).float().cpu().numpy()
-    images_out = pred["images"].squeeze(0).float().cpu().numpy()
-
-    return {
-        "depth": depth,
-        "depth_conf": depth_conf,
-        "world_points": world_points,
-        "world_conf": world_conf,
-        "images": images_out,
-        "extrinsic": extr,
-        "intrinsic": intr,
-        "proc_hw": proc_hw,
-    }
-
-
 def process_frame(
     log_dir: Path,
     scene_label: str,
@@ -246,30 +129,37 @@ def process_frame(
     args: argparse.Namespace,
     device: str,
     scene_index: int,
+    model,
+    calibration,
 ) -> int:
-    views = collect_seven_ring_views(log_dir, frame_idx)
+    views = collect_seven_ring_views_metric(log_dir, frame_idx, calibration)
     frame_dir = out_dir / f"frame_{frame_idx:06d}"
     frame_dir.mkdir(parents=True, exist_ok=True)
     ply_path = pointcloud_output_path(
         base_out_dir,
-        mode="rel",
+        mode="metric",
         dataset="av2",
         scene_index=scene_index,
         frame_index=frame_idx,
     )
 
     print(f"\n[{scene_label} frame {frame_idx}] log_id={log_dir.name}")
-    for cam, path, ts in views:
-        print(f"  {cam}: {path.name} (ts={ts})")
+    for view in views:
+        print(f"  {view.name}: {view.image_path.name} (ts={view.timestamp_ns})")
 
     meta = {
+        "version_label": VERSION_LABEL,
+        "scale_mode": "camera_baseline",
+        "description": (
+            "Metric scale from AV2 camera baselines; depth back-projected with AV2 K/pose."
+        ),
         "scene_id": scene_index,
         "scene_label": scene_label,
         "log_id": log_dir.name,
         "frame_idx": frame_idx,
-        "timestamp_ns": {cam: ts for cam, _, ts in views},
-        "cameras": RING_CAMERAS,
-        "image_paths": {cam: str(path) for cam, path, _ in views},
+        "timestamp_ns": {view.name: view.timestamp_ns for view in views},
+        "cameras": list(RING_CAMERAS),
+        "image_paths": {view.name: str(view.image_path) for view in views},
         "no_cleanup": args.no_cleanup,
         "voxel_size": args.voxel_size,
         "conf_thresh": args.conf_thresh,
@@ -289,30 +179,61 @@ def process_frame(
         )
         return 0
 
-    image_paths = [path for _, path, _ in views]
-    pred = run_vggt_seven(image_paths, device, args.model_id)
+    image_paths = [view.image_path for view in views]
+    pred = run_vggt_multi(model, image_paths, device)
+
+    metric_T_W_C = [view.T_W_C for view in views]
+    scale = estimate_scale_from_camera_baselines(pred["extrinsic"], metric_T_W_C)
+    print(f"[frame {frame_idx}] estimated metric scale={scale:.4f}")
+
+    meta["metric_scale"] = scale
+    with (frame_dir / "metadata.json").open("w", encoding="utf-8") as f:
+        json.dump(meta, f, indent=2, ensure_ascii=False)
 
     cameras_out = {
-        "extrinsic": pred["extrinsic"].tolist(),
-        "intrinsic": pred["intrinsic"].tolist(),
+        "vggt_extrinsic": pred["extrinsic"].tolist(),
+        "vggt_intrinsic": pred["intrinsic"].tolist(),
+        "av2_intrinsic": {view.name: view.intrinsic.tolist() for view in views},
+        "av2_T_W_C": {view.name: view.T_W_C.tolist() for view in views},
+        "metric_scale": scale,
         "proc_hw": list(pred["proc_hw"]),
     }
     with (frame_dir / "cameras.json").open("w", encoding="utf-8") as f:
         json.dump(cameras_out, f, indent=2)
 
-    import shutil
+    pts_list: list[np.ndarray] = []
+    col_list: list[np.ndarray] = []
 
-    for i, (cam, src, _) in enumerate(views):
-        shutil.copy2(src, frame_dir / f"image_{i:02d}_{cam}{src.suffix.lower()}")
-        save_depth_png(frame_dir / f"depth_{i:02d}_{cam}.png", pred["depth"][i])
+    for i, view in enumerate(views):
+        suffix = view.image_path.suffix.lower()
+        shutil.copy2(view.image_path, frame_dir / f"image_{i:02d}_{view.name}{suffix}")
+        save_depth_png(frame_dir / f"depth_{i:02d}_{view.name}.png", pred["depth"][i])
 
-    pts, cols = world_points_to_ply(
-        pred["world_points"],
-        pred["world_conf"],
-        pred["images"],
-        args.conf_thresh,
-        args.pixel_stride,
-    )
+        native_bgr = cv2.imread(str(view.image_path))
+        if native_bgr is None:
+            raise FileNotFoundError(f"Failed to read image: {view.image_path}")
+
+        pts, cols = backproject_metric_points(
+            pred["depth"][i],
+            pred["depth_conf"][i],
+            view.intrinsic,
+            view.T_W_C,
+            native_bgr,
+            scale,
+            args.conf_thresh,
+            args.pixel_stride,
+        )
+        if len(pts):
+            pts_list.append(pts)
+            col_list.append(cols)
+
+    if pts_list:
+        pts = np.concatenate(pts_list, axis=0)
+        cols = np.concatenate(col_list, axis=0)
+    else:
+        pts = np.zeros((0, 3))
+        cols = np.zeros((0, 3))
+
     write_pointcloud(
         ply_path,
         pts,
@@ -363,7 +284,12 @@ def main() -> int:
         mapping_path.parent.mkdir(parents=True, exist_ok=True)
         with mapping_path.open("w", encoding="utf-8") as f:
             json.dump(
-                {"split": args.split, "av2_root": str(av2_root), "scenes": mapping},
+                {
+                    "version_label": VERSION_LABEL,
+                    "split": args.split,
+                    "av2_root": str(av2_root),
+                    "scenes": mapping,
+                },
                 f,
                 indent=2,
                 ensure_ascii=False,
@@ -381,6 +307,12 @@ def main() -> int:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 1
 
+    try:
+        calibration = load_log_calibration(str(log_dir))
+    except (FileNotFoundError, ImportError) as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 1
+
     out_dir = base_out_dir / scene_label
     out_dir.mkdir(parents=True, exist_ok=True)
 
@@ -388,13 +320,19 @@ def main() -> int:
 
     device = args.device or ("cuda" if torch.cuda.is_available() else "cpu")
     print(
-        f"[init] av2_root={av2_root} {scene_label} log_id={log_dir.name} device={device}"
+        f"[init] version={VERSION_LABEL} av2_root={av2_root} "
+        f"{scene_label} log_id={log_dir.name} device={device}"
     )
 
     mapping = build_scene_mapping(split_root)
     with (base_out_dir / "scene_mapping.json").open("w", encoding="utf-8") as f:
         json.dump(
-            {"split": args.split, "av2_root": str(av2_root), "scenes": mapping},
+            {
+                "version_label": VERSION_LABEL,
+                "split": args.split,
+                "av2_root": str(av2_root),
+                "scenes": mapping,
+            },
             f,
             indent=2,
             ensure_ascii=False,
@@ -402,6 +340,8 @@ def main() -> int:
 
     run_summary = {
         "created_at": datetime.now(timezone.utc).isoformat(),
+        "version_label": VERSION_LABEL,
+        "scale_mode": "camera_baseline",
         "av2_root": str(av2_root),
         "split": args.split,
         "scene_id": scene_index,
@@ -421,6 +361,10 @@ def main() -> int:
     with (out_dir / "run_summary.json").open("w", encoding="utf-8") as f:
         json.dump(run_summary, f, indent=2)
 
+    model = None
+    if not args.dry_run:
+        model = load_vggt_model(args.model_id, device)
+
     status = 0
     for offset in range(args.num_frames):
         frame_idx = args.frame_idx + offset
@@ -434,6 +378,8 @@ def main() -> int:
                 args,
                 device,
                 scene_index,
+                model,
+                calibration,
             )
         except ValueError as exc:
             print(f"ERROR: {exc}", file=sys.stderr)
@@ -445,7 +391,7 @@ def main() -> int:
             traceback.print_exc()
             return 1
 
-    print(f"\n[done] outputs under {out_dir} ({scene_label}, log_id={log_dir.name})")
+    print(f"\n[done] Version B (metric) outputs under {out_dir} ({scene_label}, log_id={log_dir.name})")
     return status
 
 

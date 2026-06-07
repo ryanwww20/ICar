@@ -43,6 +43,7 @@ from nuscenes_utils import (  # noqa: E402
 from vggt_nuscenes_common import (  # noqa: E402
     add_nuscenes_args,
     load_vggt_model,
+    pointcloud_output_path,
     run_vggt_multi,
     save_depth_png,
     world_points_to_ply,
@@ -73,6 +74,7 @@ def process_sample(
     scene_label: str,
     scene_index: int,
     sample_idx: int,
+    base_out_dir: Path,
     out_dir: Path,
     args: argparse.Namespace,
     device: str,
@@ -81,6 +83,13 @@ def process_sample(
     sample_token, views = collect_six_cam_views(nusc, scene, sample_idx)
     sample_dir = out_dir / f"sample_{sample_idx:06d}"
     sample_dir.mkdir(parents=True, exist_ok=True)
+    ply_path = pointcloud_output_path(
+        base_out_dir,
+        mode="rel",
+        dataset="nuscenes",
+        scene_index=scene_index,
+        frame_index=sample_idx,
+    )
 
     print(f"\n[{scene_label} sample {sample_idx}] scene={scene['name']} token={sample_token}")
     for view in views:
@@ -103,12 +112,13 @@ def process_sample(
         "voxel_size": args.voxel_size,
         "conf_thresh": args.conf_thresh,
         "pixel_stride": args.pixel_stride,
+        "pointcloud_path": str(ply_path),
     }
     with (sample_dir / "metadata.json").open("w", encoding="utf-8") as f:
         json.dump(meta, f, indent=2, ensure_ascii=False)
 
     if args.dry_run:
-        print(f"[dry-run] would run VGGT on 6 images -> {sample_dir}")
+        print(f"[dry-run] would run VGGT on 6 images -> {sample_dir} ({ply_path.name})")
         return 0
 
     image_paths = [view.image_path for view in views]
@@ -135,7 +145,7 @@ def process_sample(
         args.pixel_stride,
     )
     write_pointcloud(
-        sample_dir / "pointcloud.ply",
+        ply_path,
         pts,
         cols,
         voxel_size=args.voxel_size,
@@ -251,6 +261,7 @@ def main() -> int:
                 scene_label,
                 scene_index,
                 sample_idx,
+                base_out_dir,
                 out_dir,
                 args,
                 device,

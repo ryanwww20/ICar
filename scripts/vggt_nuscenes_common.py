@@ -170,6 +170,21 @@ def backproject_metric_points(
     return pts_w, cols
 
 
+def pointcloud_output_path(
+    output_dir: Path,
+    *,
+    mode: str,
+    dataset: str,
+    scene_index: int,
+    frame_index: int,
+) -> Path:
+    """Build ``{mode}_{dataset}_scene{n}_frame{m}.ply`` under *output_dir*."""
+    if mode not in ("rel", "metric"):
+        raise ValueError(f"mode must be 'rel' or 'metric', got {mode!r}")
+    name = f"{mode}_{dataset}_scene{scene_index}_frame{frame_index}.ply"
+    return output_dir / name
+
+
 def load_vggt_model(model_id: str, device: str):
     import torch
     from vggt.models.vggt import VGGT

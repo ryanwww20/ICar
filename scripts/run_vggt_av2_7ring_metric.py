@@ -49,6 +49,7 @@ from vggt_nuscenes_common import (  # noqa: E402
     backproject_metric_points,
     estimate_scale_from_camera_baselines,
     load_vggt_model,
+    pointcloud_output_path,
     run_vggt_multi,
     save_depth_png,
     write_pointcloud,
@@ -127,6 +128,7 @@ def process_frame(
     log_dir: Path,
     scene_label: str,
     frame_idx: int,
+    base_out_dir: Path,
     out_dir: Path,
     args: argparse.Namespace,
     device: str,
@@ -137,6 +139,13 @@ def process_frame(
     views = collect_seven_ring_views_metric(log_dir, frame_idx, calibration)
     frame_dir = out_dir / f"frame_{frame_idx:06d}"
     frame_dir.mkdir(parents=True, exist_ok=True)
+    ply_path = pointcloud_output_path(
+        base_out_dir,
+        mode="metric",
+        dataset="av2",
+        scene_index=scene_index,
+        frame_index=frame_idx,
+    )
 
     print(f"\n[{scene_label} frame {frame_idx}] log_id={log_dir.name}")
     for view in views:
@@ -159,12 +168,13 @@ def process_frame(
         "voxel_size": args.voxel_size,
         "conf_thresh": args.conf_thresh,
         "pixel_stride": args.pixel_stride,
+        "pointcloud_path": str(ply_path),
     }
     with (frame_dir / "metadata.json").open("w", encoding="utf-8") as f:
         json.dump(meta, f, indent=2, ensure_ascii=False)
 
     if args.dry_run:
-        print(f"[dry-run] would run VGGT on 7 images -> {frame_dir}")
+        print(f"[dry-run] would run VGGT on 7 images -> {frame_dir} ({ply_path.name})")
         return 0
 
     image_paths = [view.image_path for view in views]
@@ -223,7 +233,7 @@ def process_frame(
         cols = np.zeros((0, 3))
 
     write_pointcloud(
-        frame_dir / "pointcloud.ply",
+        ply_path,
         pts,
         cols,
         voxel_size=args.voxel_size,
@@ -343,6 +353,7 @@ def main() -> int:
                 log_dir,
                 scene_label,
                 frame_idx,
+                base_out_dir,
                 out_dir,
                 args,
                 device,

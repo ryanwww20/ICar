@@ -36,6 +36,10 @@ from av2_utils import (  # noqa: E402
     resolve_log_dir,
     resolve_split_root,
 )
+from vggt_nuscenes_common import (  # noqa: E402
+    pointcloud_output_path,
+    write_pointcloud,
+)
 
 RING_CAMERAS = (
     "ring_front_center",
@@ -241,6 +245,7 @@ def process_frame(
     log_dir: Path,
     scene_label: str,
     frame_idx: int,
+    base_out_dir: Path,
     out_dir: Path,
     args: argparse.Namespace,
     device: str,
@@ -249,6 +254,13 @@ def process_frame(
     views = collect_seven_ring_views(log_dir, frame_idx)
     frame_dir = out_dir / f"frame_{frame_idx:06d}"
     frame_dir.mkdir(parents=True, exist_ok=True)
+    ply_path = pointcloud_output_path(
+        base_out_dir,
+        mode="rel",
+        dataset="av2",
+        scene_index=scene_index,
+        frame_index=frame_idx,
+    )
 
     print(f"\n[{scene_label} frame {frame_idx}] log_id={log_dir.name}")
     for cam, path, ts in views:
@@ -266,12 +278,13 @@ def process_frame(
         "voxel_size": args.voxel_size,
         "conf_thresh": args.conf_thresh,
         "pixel_stride": args.pixel_stride,
+        "pointcloud_path": str(ply_path),
     }
     with (frame_dir / "metadata.json").open("w", encoding="utf-8") as f:
         json.dump(meta, f, indent=2, ensure_ascii=False)
 
     if args.dry_run:
-        print(f"[dry-run] would run VGGT on 7 images -> {frame_dir}")
+        print(f"[dry-run] would run VGGT on 7 images -> {frame_dir} ({ply_path.name})")
         return 0
 
     image_paths = [path for _, path, _ in views]
@@ -298,27 +311,14 @@ def process_frame(
         args.conf_thresh,
         args.pixel_stride,
     )
-    print(f"[frame {frame_idx}] points: {len(pts)}")
-
-    if len(pts) > 0:
-        import open3d as o3d
-
-        pcd = o3d.geometry.PointCloud()
-        pcd.points = o3d.utility.Vector3dVector(pts)
-        pcd.colors = o3d.utility.Vector3dVector(np.clip(cols, 0, 1))
-
-        if args.no_cleanup:
-            print(f"[frame {frame_idx}] cleanup disabled (--no-cleanup)")
-        else:
-            if args.voxel_size > 0:
-                pcd = pcd.voxel_down_sample(args.voxel_size)
-            pcd, _ = pcd.remove_statistical_outlier(nb_neighbors=20, std_ratio=2.0)
-            print(f"[frame {frame_idx}] points after cleanup: {len(pcd.points)}")
-
-        o3d.io.write_point_cloud(str(frame_dir / "pointcloud.ply"), pcd)
-    else:
-        print(f"[frame {frame_idx}] WARNING: no points passed confidence filter")
-
+    write_pointcloud(
+        ply_path,
+        pts,
+        cols,
+        voxel_size=args.voxel_size,
+        no_cleanup=args.no_cleanup,
+        label=f"frame {frame_idx}",
+    )
     return 0
 
 
@@ -406,7 +406,14 @@ def main() -> int:
         frame_idx = args.frame_idx + offset
         try:
             status |= process_frame(
-                log_dir, scene_label, frame_idx, out_dir, args, device, scene_index
+                log_dir,
+                scene_label,
+                frame_idx,
+                base_out_dir,
+                out_dir,
+                args,
+                device,
+                scene_index,
             )
         except ValueError as exc:
             print(f"ERROR: {exc}", file=sys.stderr)

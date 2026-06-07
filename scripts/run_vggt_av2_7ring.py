@@ -1,5 +1,10 @@
 #!/usr/bin/env python3
-"""Run VGGT on 7 Argoverse 2 ring cameras at the same frame index (one forward pass)."""
+"""
+Version A (relative / up-to-scale):
+Run VGGT on 7 Argoverse 2 ring cameras at the same frame index (one forward pass).
+
+Uses VGGT world_points directly. See run_vggt_av2_7ring_metric.py for metric output.
+"""
 
 from __future__ import annotations
 

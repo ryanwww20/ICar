@@ -45,6 +45,10 @@ from av2_utils import (  # noqa: E402
     resolve_log_dir,
     resolve_split_root,
 )
+from ply_postprocess_common import (  # noqa: E402
+    add_postprocess_args,
+    maybe_postprocess_pointcloud,
+)
 from vggt_nuscenes_common import (  # noqa: E402
     add_cleanup_args,
     backproject_metric_points,
@@ -111,6 +115,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--conf-thresh", type=float, default=0.5)
     parser.add_argument("--pixel-stride", type=int, default=2)
     add_cleanup_args(parser)
+    add_postprocess_args(parser)
     parser.add_argument("--dry-run", action="store_true")
     return parser.parse_args()
 
@@ -166,6 +171,12 @@ def process_frame(
 
     if args.dry_run:
         print(f"[dry-run] would run VGGT on 7 images -> {frame_dir} ({ply_path.name})")
+        maybe_postprocess_pointcloud(
+            ply_path,
+            args,
+            label=f"frame {frame_idx}",
+            dry_run=True,
+        )
         return 0
 
     image_paths = [view.image_path for view in views]
@@ -231,6 +242,22 @@ def process_frame(
         no_cleanup=args.no_cleanup,
         label=f"frame {frame_idx}",
     )
+    post_path = maybe_postprocess_pointcloud(
+        ply_path,
+        args,
+        label=f"frame {frame_idx}",
+    )
+    if post_path is not None:
+        meta["postprocessed_pointcloud_path"] = str(post_path)
+        meta["post_process"] = {
+            "task": args.post_process_task,
+            "sky_axis": args.sky_axis,
+            "sky_side": args.sky_side,
+            "sky_keep_percentile": args.sky_keep_percentile,
+            "sky_max": args.sky_max,
+        }
+        with (frame_dir / "metadata.json").open("w", encoding="utf-8") as f:
+            json.dump(meta, f, indent=2, ensure_ascii=False)
     return 0
 
 
@@ -328,6 +355,8 @@ def main() -> int:
         "voxel_size": args.voxel_size,
         "conf_thresh": args.conf_thresh,
         "pixel_stride": args.pixel_stride,
+        "post_process": args.post_process,
+        "post_process_task": args.post_process_task,
     }
     with (out_dir / "run_summary.json").open("w", encoding="utf-8") as f:
         json.dump(run_summary, f, indent=2)

@@ -186,19 +186,73 @@ python scripts/run_vggt_nuscenes_6cam_metric.py \
 | `--no-cleanup` | off | Skip voxel downsample + outlier removal |
 | `--dry-run` | off | List inputs only; do not run VGGT |
 
+### PLY post-processing (all `run_vggt_*` scripts)
+
+After each raw `.ply` is saved, the scripts run `scripts/post_process/ply_post-process.py` by default (`full_pipeline`: sky removal → floor hole fill).
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--post-process` | on | Enable post-processing after saving raw `.ply` |
+| `--no-post-process` | — | Skip post-processing |
+| `--post-process-task` | `full_pipeline` | `full_pipeline` or `fill_hole` only |
+| `--sky-axis` | `y` | Axis for sky clipping (`x` / `y` / `z`) |
+| `--sky-side` | `low` | Sky on the high or low side of the axis |
+| `--sky-keep-percentile` | `0.9` | Fraction of non-sky points to keep |
+| `--sky-max` | — | Absolute sky threshold (overrides percentile) |
+
+```bash
+# Default: VGGT → raw .ply → post-processed .ply
+python scripts/run_vggt_av2_7ring.py \
+  --split val \
+  --scene-id 0 \
+  --frame-idx 0
+
+# Skip post-processing
+python scripts/run_vggt_av2_7ring.py \
+  --split val \
+  --scene-id 0 \
+  --frame-idx 0 \
+  --no-post-process
+
+# Only fill holes (no sky removal)
+python scripts/run_vggt_av2_7ring.py \
+  --split val \
+  --scene-id 0 \
+  --frame-idx 0 \
+  --post-process-task fill_hole
+```
+
+To run post-processing standalone on an existing `.ply`:
+
+```bash
+python scripts/post_process/ply_post-process.py \
+  --input outputs/vggt_av2_7ring/rel_av2_scene0_frame0.ply \
+  --output outputs/vggt_av2_7ring/rel_av2_scene0_frame0_post.ply
+
+python scripts/post_process/ply_post-process.py --list
+```
+
 ---
 
 ## Output layout (per frame / sample)
 
+Point clouds are written under the output root (not inside each frame/sample folder):
+
 ```
-frame_000000/   (AV2)
-sample_000000/  (nuScenes)
-├── metadata.json      # scene, timestamps, version_label, scale_mode
-├── cameras.json       # predicted (and metric: dataset) calibration
-├── image_00_*.jpg
-├── depth_00_*.png
-└── pointcloud.ply
+outputs/vggt_av2_7ring/
+├── rel_av2_scene0_frame0.ply          # raw VGGT output
+├── rel_av2_scene0_frame0_post.ply     # post-processed (default)
+├── scene_mapping.json
+└── scene-0/
+    ├── run_summary.json
+    └── frame_000000/
+        ├── metadata.json              # pointcloud_path, postprocessed_pointcloud_path
+        ├── cameras.json               # predicted (and metric: dataset) calibration
+        ├── image_00_*.jpg
+        └── depth_00_*.png
 ```
+
+nuScenes uses the same pattern with `sample_XXXXXX/` folders and names like `rel_nuscenes_scene0_frame0.ply`.
 
 ---
 
@@ -209,4 +263,6 @@ sample_000000/  (nuScenes)
 | AV2 7-ring | `run_vggt_av2_7ring.py` | `run_vggt_av2_7ring_metric.py` |
 | nuScenes 6-cam | `run_vggt_nuscenes_6cam.py` | `run_vggt_nuscenes_6cam_metric.py` |
 
-Shared helpers: `av2_utils.py`, `av2_calibration_utils.py`, `nuscenes_utils.py`, `vggt_nuscenes_common.py`
+Shared helpers: `av2_utils.py`, `av2_calibration_utils.py`, `nuscenes_utils.py`, `vggt_nuscenes_common.py`, `ply_postprocess_common.py`
+
+Post-processing: `post_process/ply_post-process.py`, `post_process/fill_hole.py`, `post_process/view_ply.py`

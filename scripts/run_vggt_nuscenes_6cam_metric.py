@@ -41,6 +41,10 @@ from nuscenes_utils import (  # noqa: E402
     load_nuscenes,
     resolve_scene,
 )
+from ply_postprocess_common import (  # noqa: E402
+    add_postprocess_args,
+    maybe_postprocess_pointcloud,
+)
 from vggt_nuscenes_common import (  # noqa: E402
     add_nuscenes_args,
     backproject_metric_points,
@@ -67,6 +71,7 @@ def parse_args() -> argparse.Namespace:
         help="Output root (default: outputs/vggt_nuscenes_6cam_metric).",
     )
     add_nuscenes_args(parser)
+    add_postprocess_args(parser)
     return parser.parse_args()
 
 
@@ -123,6 +128,12 @@ def process_sample(
 
     if args.dry_run:
         print(f"[dry-run] would run VGGT on 6 images -> {sample_dir} ({ply_path.name})")
+        maybe_postprocess_pointcloud(
+            ply_path,
+            args,
+            label=f"sample {sample_idx}",
+            dry_run=True,
+        )
         return 0
 
     image_paths = [view.image_path for view in views]
@@ -188,6 +199,22 @@ def process_sample(
         no_cleanup=args.no_cleanup,
         label=f"sample {sample_idx}",
     )
+    post_path = maybe_postprocess_pointcloud(
+        ply_path,
+        args,
+        label=f"sample {sample_idx}",
+    )
+    if post_path is not None:
+        meta["postprocessed_pointcloud_path"] = str(post_path)
+        meta["post_process"] = {
+            "task": args.post_process_task,
+            "sky_axis": args.sky_axis,
+            "sky_side": args.sky_side,
+            "sky_keep_percentile": args.sky_keep_percentile,
+            "sky_max": args.sky_max,
+        }
+        with (sample_dir / "metadata.json").open("w", encoding="utf-8") as f:
+            json.dump(meta, f, indent=2, ensure_ascii=False)
     return 0
 
 
@@ -279,6 +306,8 @@ def main() -> int:
         "voxel_size": args.voxel_size,
         "conf_thresh": args.conf_thresh,
         "pixel_stride": args.pixel_stride,
+        "post_process": args.post_process,
+        "post_process_task": args.post_process_task,
     }
     with (out_dir / "run_summary.json").open("w", encoding="utf-8") as f:
         json.dump(run_summary, f, indent=2)

@@ -227,6 +227,48 @@ def execute_task(task_name: str, args: argparse.Namespace) -> None:
     print(f"=== Finished task: {task.name} ===")
 
 
+def postprocess_ply(
+    input_path: Path | str,
+    output_path: Path | str,
+    *,
+    task: str = "full_pipeline",
+    sky_axis: str = "y",
+    sky_side: str = "low",
+    sky_keep_percentile: float = 0.9,
+    sky_max: float | None = None,
+    visualize: bool = False,
+) -> Path:
+    """Run one post-processing task programmatically (non-interactive by default)."""
+    input_path = Path(input_path)
+    output_path = Path(output_path)
+
+    post_dir = Path(__file__).resolve().parent
+    if str(post_dir) not in sys.path:
+        sys.path.insert(0, str(post_dir))
+
+    import fill_hole
+
+    fill_hole.visualize = visualize
+
+    args = argparse.Namespace(
+        input=str(input_path),
+        output=str(output_path),
+        sky_axis=sky_axis,
+        sky_side=sky_side,
+        sky_keep_percentile=sky_keep_percentile,
+        sky_max=sky_max,
+    )
+
+    if task not in TASKS:
+        raise ValueError(f"Unknown task: {task!r}. Available: {', '.join(TASKS)}")
+
+    execute_task(task, args)
+
+    if not output_path.exists():
+        raise RuntimeError(f"Post-process did not create output: {output_path}")
+    return output_path
+
+
 def main() -> int:
     parser = build_parser()
     args = parser.parse_args()

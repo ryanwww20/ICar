@@ -58,18 +58,30 @@ def add_nuscenes_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--device", type=str, default=None)
     parser.add_argument("--conf-thresh", type=float, default=0.5)
     parser.add_argument("--pixel-stride", type=int, default=2)
+    add_cleanup_args(parser)
+    parser.add_argument("--dry-run", action="store_true")
+
+
+def add_cleanup_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--voxel-size",
         type=float,
         default=0.10,
-        help="Voxel size (m) for downsampling. Use 0 to skip voxel step only.",
+        help="Voxel size (m) for downsampling when --cleanup is set. Use 0 to skip voxel step only.",
+    )
+    parser.add_argument(
+        "--cleanup",
+        dest="no_cleanup",
+        action="store_false",
+        help="Enable voxel downsampling and outlier removal before saving.",
     )
     parser.add_argument(
         "--no-cleanup",
+        dest="no_cleanup",
         action="store_true",
-        help="Skip voxel downsampling and outlier removal; save all filtered points.",
+        help="Skip voxel downsampling and outlier removal (default).",
     )
-    parser.add_argument("--dry-run", action="store_true")
+    parser.set_defaults(no_cleanup=True)
 
 
 def save_depth_png(path: Path, depth: np.ndarray) -> None:
@@ -253,7 +265,7 @@ def write_pointcloud(
     print(f"[{label}] points: {len(pts)}")
 
     if no_cleanup:
-        print(f"[{label}] cleanup disabled (--no-cleanup)")
+        print(f"[{label}] cleanup disabled")
     else:
         if voxel_size > 0:
             pcd = pcd.voxel_down_sample(voxel_size)

@@ -46,6 +46,7 @@ from av2_utils import (  # noqa: E402
     resolve_split_root,
 )
 from vggt_nuscenes_common import (  # noqa: E402
+    add_cleanup_args,
     backproject_metric_points,
     estimate_scale_from_camera_baselines,
     load_vggt_model,
@@ -109,17 +110,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--device", type=str, default=None)
     parser.add_argument("--conf-thresh", type=float, default=0.5)
     parser.add_argument("--pixel-stride", type=int, default=2)
-    parser.add_argument(
-        "--voxel-size",
-        type=float,
-        default=0.10,
-        help="Voxel size (m) for downsampling. Use 0 to skip voxel step only.",
-    )
-    parser.add_argument(
-        "--no-cleanup",
-        action="store_true",
-        help="Skip voxel downsampling and outlier removal; save all filtered points.",
-    )
+    add_cleanup_args(parser)
     parser.add_argument("--dry-run", action="store_true")
     return parser.parse_args()
 

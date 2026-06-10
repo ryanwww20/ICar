@@ -22,15 +22,15 @@ DEFAULT_CAR_PNG = SCRIPT_DIR / "car.png"
 # Render defaults (edit here).
 IMAGE_SIZE = 1024
 POINT_SIZE = 2.0
-BACKGROUND_RGBA = (1.0, 1.0, 1.0, 1.0)   # white, like the default Open3D viewport
+BACKGROUND_RGBA = (0.0, 0.0, 0.0, 1.0)   # black
 CROP_PERCENTILE = 99.5                    # drop far flyers before framing the view
 
 # Perspective camera behind & above the ego, sized relative to the scene radius
 # (so the framing adapts to small ROIs and large scenes alike).
 SCENE_RADIUS_PERCENTILE = 98.0  # radius used as the framing reference
-CAM_BACK_FRAC = 0.9             # camera offset behind ego (toward -Z), x scene radius
-CAM_HEIGHT_FRAC = 0.40          # camera height above ground (toward -Y), x scene radius
-LOOK_AHEAD_FRAC = 0.70          # look-at distance ahead (toward +Z), x scene radius
+CAM_BACK_FRAC = 0.5             # camera offset behind ego (toward -Z), x scene radius
+CAM_HEIGHT_FRAC = 0.20          # camera height above ground (toward -Y), x scene radius
+LOOK_AHEAD_FRAC = 0.80          # look-at distance ahead (toward +Z), x scene radius
 LOOK_DOWN = 0.0                 # extra downward offset of the look-at target (toward +Y)
 FIELD_OF_VIEW = 40.0            # vertical field of view in degrees
 

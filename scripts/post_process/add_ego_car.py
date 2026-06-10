@@ -30,9 +30,10 @@ CROP_PERCENTILE = 99.5                    # drop far flyers before framing the v
 SCENE_RADIUS_PERCENTILE = 98.0  # radius used as the framing reference
 CAM_BACK_FRAC = 0.5             # camera offset behind ego (toward -Z), x scene radius
 CAM_HEIGHT_FRAC = 0.20          # camera height above ground (toward -Y), x scene radius
-LOOK_AHEAD_FRAC = 0.80          # look-at distance ahead (toward +Z), x scene radius
+LOOK_AHEAD_FRAC = 0.0           # look-at offset ahead (toward +Z), x scene radius; 0 = scene center
 LOOK_DOWN = 0.0                 # extra downward offset of the look-at target (toward +Y)
 FIELD_OF_VIEW = 40.0            # vertical field of view in degrees
+CENTER_VIEW_ITERS = 10          # iterations to nudge look-at so points land in image center
 
 # Car icon overlay.
 CAR_LENGTH_FRACTION = 0.09
@@ -132,6 +133,26 @@ def _camera_eye_target(
     return eye, target, up
 
 
+def _project_points(
+    points: np.ndarray,
+    view: np.ndarray,
+    proj: np.ndarray,
+    width: int,
+    height: int,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Batch world points -> pixel (u, v) and clip w."""
+    n = points.shape[0]
+    hom = np.concatenate([points, np.ones((n, 1), dtype=np.float64)], axis=1)
+    clip = (proj @ (view @ hom.T)).T
+    w = clip[:, 3]
+    valid = np.abs(w) > 1e-9
+    ndc = np.empty((n, 3), dtype=np.float64)
+    ndc[valid] = clip[valid, :3] / w[valid, None]
+    u = (ndc[:, 0] * 0.5 + 0.5) * width
+    v = (1.0 - (ndc[:, 1] * 0.5 + 0.5)) * height
+    return u, v, w
+
+
 def _project_point(
     point: np.ndarray,
     view: np.ndarray,
@@ -149,6 +170,60 @@ def _project_point(
     u = (ndc[0] * 0.5 + 0.5) * width
     v = (1.0 - (ndc[1] * 0.5 + 0.5)) * height
     return float(u), float(v), float(w)
+
+
+def _center_camera_target_on_points(
+    pts: np.ndarray,
+    eye: np.ndarray,
+    target: np.ndarray,
+    up: np.ndarray,
+    *,
+    renderer,
+    field_of_view: float,
+    width: int,
+    height: int,
+    n_iters: int = CENTER_VIEW_ITERS,
+) -> np.ndarray:
+    """Nudge look-at so the projected point cloud sits near the image center."""
+    target = target.copy()
+    dist = float(np.linalg.norm(target - eye))
+    step = max(dist * np.tan(np.radians(field_of_view) * 0.5) * 0.15, 1e-3)
+
+    sample_n = min(int(pts.shape[0]), 12000)
+    if pts.shape[0] > sample_n:
+        idx = np.random.default_rng(0).choice(pts.shape[0], sample_n, replace=False)
+        sample = pts[idx]
+    else:
+        sample = pts
+
+    for _ in range(max(int(n_iters), 0)):
+        renderer.setup_camera(float(field_of_view), target, eye, up)
+        view = np.asarray(renderer.scene.camera.get_view_matrix(), dtype=np.float64)
+        proj = np.asarray(renderer.scene.camera.get_projection_matrix(), dtype=np.float64)
+        u, v, w = _project_points(sample, view, proj, width, height)
+        on_screen = (w > 0.05) & (u >= 0.0) & (u < width) & (v >= 0.0) & (v < height)
+        if not np.any(on_screen):
+            break
+        u_lo, u_hi = np.percentile(u[on_screen], [10.0, 90.0])
+        v_lo, v_hi = np.percentile(v[on_screen], [10.0, 90.0])
+        u_ctr = 0.5 * (float(u_lo) + float(u_hi))
+        v_ctr = 0.5 * (float(v_lo) + float(v_hi))
+        du = u_ctr - width * 0.5
+        dv = v_ctr - height * 0.5
+        if abs(du) < 4.0 and abs(dv) < 4.0:
+            break
+
+        forward = target - eye
+        forward /= np.linalg.norm(forward) + 1e-12
+        right = np.cross(forward, up)
+        right /= np.linalg.norm(right) + 1e-12
+        up_cam = np.cross(right, forward)
+        up_cam /= np.linalg.norm(up_cam) + 1e-12
+
+        # Shift look-at so the on-screen bbox moves toward the image center.
+        target = target + right * (du / width) * step * 4.0 - up_cam * (dv / height) * step * 4.0
+
+    return target
 
 
 def render_open3d_rear_top(
@@ -223,6 +298,16 @@ def render_open3d_rear_top(
         cam_back_frac=cam_back_frac,
         look_ahead_frac=look_ahead_frac,
         look_down=look_down,
+    )
+    target = _center_camera_target_on_points(
+        pts,
+        eye,
+        target,
+        up,
+        renderer=renderer,
+        field_of_view=field_of_view,
+        width=size,
+        height=size,
     )
     renderer.setup_camera(float(field_of_view), target, eye, up)
 

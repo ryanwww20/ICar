@@ -18,7 +18,7 @@ num_iterations = 500
 use_manual_plane = False  # True: skip RANSAC and use manual_plane_model directly
 manual_plane_model = (0, 1, 0, 0)  # ax + by + cz + d = 0
 manual_inlier_distance = 0.03  # |dist to plane| for inliers when use_manual_plane=True
-grid_resolution = 0.005  # candidate spacing on the plane (m)
+grid_resolution = 0.003  # candidate spacing on the plane (m)
 plane_band = 0.06  # |dist to plane| for classifying floor points (m)
 max_fill_distance = 0.25  # must be within this distance of a floor inlier (m)
 min_hole_radius = 0.0015  # gap must be at least this far from existing floor (m)
@@ -30,7 +30,7 @@ large_hole_max_radius = 5  # meters, used only inside ROI
 large_hole_max_fill_distance = 0.5  # meters, used only inside ROI
 force_fill_large_hole_in_roi = True  # if True, skip inlier-distance gate inside ROI
 enable_large_hole_fine_grid = True  # use finer grid spacing inside ROI for denser fills
-large_hole_fine_resolution = 0.005  # candidate spacing inside ROI (m); smaller = denser
+large_hole_fine_resolution = 0.003  # candidate spacing inside ROI (m); smaller = denser
 hull_sample_max = 8_000  # subsample floor UV for convex hull
 interp_method = "linear"  # linear | nearest | cubic
 interp_max_samples = 50_000

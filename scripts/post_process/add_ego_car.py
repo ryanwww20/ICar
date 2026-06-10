@@ -1,9 +1,10 @@
 """Rear-top scene export with car.png overlay (vggt_sixview_scene style).
 
-Coordinate conventions (Y-up display frame):
-- VGGT / OpenCV world is Y-down; points are flipped (y *= -1) before rendering.
-- Car faces +Z; rear-top camera sits behind (-Z) and above (+Y), looking forward.
-- ``car.png`` front points up in the image (+Z), pasted at the rig center projection.
+Coordinate conventions (VGGT / OpenCV native, no axis flip):
+- +Z: forward (car front, image up)
+- +X: right (image horizontal)
+- -Y: camera side (camera sits at negative Y, looking toward +Y and +Z)
+- ``car.png`` front points up in the image (+Z), pasted at the rig center.
 """
 
 from __future__ import annotations
@@ -21,10 +22,9 @@ BEV_EXTENT_PERCENTILE = 72.0
 BEV_MARGIN_FRACTION = 0.08
 CAR_LENGTH_FRACTION = 0.11
 
-# Rear-top orthographic camera (meters, Y-up frame).
-REAR_TOP_CAMERA_HEIGHT = 2.5
-REAR_TOP_CAMERA_BACK = 3.0
-REAR_TOP_LOOK_AHEAD = 8.0
+# Rear-top oblique weights (native Y-down frame).
+# v = -rel_z + OBLIQUE_Y_WEIGHT * rel_y  -> +Z up, +Y (down) tilts scene.
+REAR_TOP_OBLIQUE_Y_WEIGHT = 0.1
 
 
 def _load_car_rgba(car_path: Path):
@@ -81,45 +81,43 @@ def estimate_scene_center_xz(pts: np.ndarray) -> tuple[float, float]:
     return float(np.median(pts[:, 0])), float(np.median(pts[:, 2]))
 
 
-def _rear_top_basis(
-    center_xz: tuple[float, float],
-    *,
-    camera_height: float = REAR_TOP_CAMERA_HEIGHT,
-    camera_back: float = REAR_TOP_CAMERA_BACK,
-    look_ahead: float = REAR_TOP_LOOK_AHEAD,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-    """Return eye, target, right, up_v, forward for the rear-top ortho camera."""
+def estimate_ground_y(pts: np.ndarray, center_xz: tuple[float, float]) -> float:
+    """Median Y of points near the rig center on the ground plane."""
     center_x, center_z = center_xz
-    eye = np.array([center_x, camera_height, center_z - camera_back], dtype=np.float64)
-    target = np.array([center_x, 0.0, center_z + look_ahead], dtype=np.float64)
-    forward = target - eye
-    forward /= np.linalg.norm(forward) + 1e-12
-    up_w = np.array([0.0, 1.0, 0.0], dtype=np.float64)
-    right = np.cross(up_w, forward)
-    right /= np.linalg.norm(right) + 1e-12
-    up_v = np.cross(forward, right)
-    up_v /= np.linalg.norm(up_v) + 1e-12
-    return eye, target, right, up_v, forward
+    r = np.hypot(pts[:, 0] - center_x, pts[:, 2] - center_z)
+    if r.size == 0:
+        return 0.0
+    r_thresh = float(np.percentile(r, 30.0))
+    near = pts[r <= max(r_thresh, 1e-6)]
+    return float(np.median(near[:, 1])) if near.size else 0.0
 
 
-def _project_rear_top(
+def _project_rear_top_native(
     pts: np.ndarray,
     *,
     center_xz: tuple[float, float],
-    camera_height: float = REAR_TOP_CAMERA_HEIGHT,
-    camera_back: float = REAR_TOP_CAMERA_BACK,
-    look_ahead: float = REAR_TOP_LOOK_AHEAD,
+    ground_y: float,
+    oblique_y_weight: float = REAR_TOP_OBLIQUE_Y_WEIGHT,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    eye, target, right, up_v, forward = _rear_top_basis(
-        center_xz,
-        camera_height=camera_height,
-        camera_back=camera_back,
-        look_ahead=look_ahead,
-    )
-    rel = pts - target
-    u = rel @ right
-    v = rel @ up_v
-    depth = (pts - eye) @ forward
+    """
+    Map native VGGT coords to rear-top image axes.
+
+    Image horizontal (u) = world +X.
+    Image vertical (v)     = -world Z (+Z forward points up) with Y oblique tilt.
+    Depth (for draw order) = distance along camera ray from (-Y, -Z) toward (+Y, +Z).
+    """
+    center_x, center_z = center_xz
+    rel_x = pts[:, 0] - center_x
+    rel_z = pts[:, 2] - center_z
+    rel_y = pts[:, 1] - ground_y
+
+    u = rel_x
+    v = -rel_z + oblique_y_weight * rel_y
+
+    # Camera at -Y / -Z quadrant looking toward +Y / +Z.
+    view = np.array([0.0, 1.0, 1.0], dtype=np.float64)
+    view /= np.linalg.norm(view)
+    depth = pts[:, 0] * 0.0 + rel_y * view[1] + rel_z * view[2]
     return u, v, depth
 
 
@@ -128,25 +126,23 @@ def render_rear_top_bev(
     cols: np.ndarray,
     *,
     center_xz: tuple[float, float] = (0.0, 0.0),
+    ground_y: float | None = None,
     image_size: int = BEV_IMAGE_SIZE,
     extent_percentile: float = BEV_EXTENT_PERCENTILE,
     margin_fraction: float = BEV_MARGIN_FRACTION,
-    y_down: bool = True,
-    camera_height: float = REAR_TOP_CAMERA_HEIGHT,
-    camera_back: float = REAR_TOP_CAMERA_BACK,
-    look_ahead: float = REAR_TOP_LOOK_AHEAD,
+    oblique_y_weight: float = REAR_TOP_OBLIQUE_Y_WEIGHT,
 ) -> tuple[np.ndarray, float, tuple[float, float]]:
     """
-    Orthographic rear-top view: camera behind (-Z) and above (+Y), looking forward.
+    Rear-top view in native VGGT coords (+Z forward, -Y camera side).
 
-    Image horizontal axis = world X; vertical axis mixes height and forward depth
-    so the scene appears as if viewed from behind and above the ego vehicle.
+    Uses the same X/Z image axes as sixview top-down BEV (X horizontal, +Z up),
+    plus a Y oblique term for the behind-and-above perspective.
     """
     pts = np.asarray(pts, dtype=np.float64)
     cols = np.asarray(cols, dtype=np.float64)
-    if y_down:
-        pts = pts.copy()
-        pts[:, 1] *= -1.0
+
+    if ground_y is None:
+        ground_y = estimate_ground_y(pts, center_xz)
 
     center_x, center_z = center_xz
     r_l2 = np.hypot(pts[:, 0] - center_x, pts[:, 2] - center_z)
@@ -158,21 +154,20 @@ def render_rear_top_bev(
     if pts.shape[0] == 0:
         raise RuntimeError("No points left for rear-top view after radial crop")
 
-    u, v, depth = _project_rear_top(
+    u, v, depth = _project_rear_top_native(
         pts,
         center_xz=center_xz,
-        camera_height=camera_height,
-        camera_back=camera_back,
-        look_ahead=look_ahead,
+        ground_y=ground_y,
+        oblique_y_weight=oblique_y_weight,
     )
 
     half_u = max(float(np.percentile(np.abs(u), pct)), 1e-6) * (1.0 + float(margin_fraction))
     half_v = max(float(np.percentile(np.abs(v), pct)), 1e-6) * (1.0 + float(margin_fraction))
     size = int(image_size)
 
-    # Farther points first; nearer points overwrite (painter's algorithm).
+    # Farther points first; nearer points overwrite.
     order = np.argsort(depth, kind="stable")
-    u, v, cols, depth = u[order], v[order], cols[order], depth[order]
+    u, v, cols = u[order], v[order], cols[order]
 
     ui = np.clip((size - 1) * (0.5 + 0.5 * u / half_u), 0, size - 1).round().astype(np.int32)
     vi = np.clip((size - 1) * (0.5 - 0.5 * v / half_v), 0, size - 1).round().astype(np.int32)
@@ -180,15 +175,11 @@ def render_rear_top_bev(
     img = np.zeros((size, size, 3), dtype=np.float64)
     img[vi, ui] = cols
 
-    rig_u = 0.5 * (size - 1)
-    rig_v = 0.5 * (size - 1)
-    ground = np.array([center_x, 0.0, center_z], dtype=np.float64)
-    gu, gv, _ = _project_rear_top(
-        ground[None, :],
+    gu, gv, _ = _project_rear_top_native(
+        np.array([[center_x, ground_y, center_z]], dtype=np.float64),
         center_xz=center_xz,
-        camera_height=camera_height,
-        camera_back=camera_back,
-        look_ahead=look_ahead,
+        ground_y=ground_y,
+        oblique_y_weight=oblique_y_weight,
     )
     rig_u = float(np.clip((size - 1) * (0.5 + 0.5 * gu[0] / half_u), 0, size - 1))
     rig_v = float(np.clip((size - 1) * (0.5 - 0.5 * gv[0] / half_v), 0, size - 1))
@@ -206,7 +197,7 @@ def save_bev_png(
     extent_percentile: float = BEV_EXTENT_PERCENTILE,
     margin_fraction: float = BEV_MARGIN_FRACTION,
     car_length_fraction: float = CAR_LENGTH_FRACTION,
-    y_down: bool = True,
+    oblique_y_weight: float = REAR_TOP_OBLIQUE_Y_WEIGHT,
 ) -> Path:
     """Render rear-top view + car.png overlay and save as PNG. Works headless."""
     from PIL import Image
@@ -227,7 +218,7 @@ def save_bev_png(
         image_size=image_size,
         extent_percentile=extent_percentile,
         margin_fraction=margin_fraction,
-        y_down=y_down,
+        oblique_y_weight=oblique_y_weight,
     )
 
     car_path = Path(car_png) if car_png is not None else DEFAULT_CAR_PNG
@@ -248,7 +239,7 @@ def save_bev_png(
     out_path.parent.mkdir(parents=True, exist_ok=True)
     Image.fromarray((np.clip(img, 0.0, 1.0) * 255.0).astype(np.uint8)).save(out_path)
     print(
-        f"Rear-top BEV (behind+above, r={radius:.3f}, center={center_xz}){car_msg} "
+        f"Rear-top BEV (+Z up, -Y cam, r={radius:.3f}, center={center_xz}){car_msg} "
         f"-> {out_path}"
     )
     return out_path

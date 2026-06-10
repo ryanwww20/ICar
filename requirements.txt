@@ -1,0 +1,37 @@
+# =============================================================================
+# ICar — Python dependencies
+# =============================================================================
+# Recommended: Python 3.10+
+# GPU: CUDA-capable GPU strongly recommended for VGGT inference.
+#
+# Install PyTorch first if you need a specific CUDA build:
+#   https://pytorch.org/get-started/locally/
+#
+# Then install this file from the repo root:
+#   pip install -r requirements.txt
+# =============================================================================
+
+# --- VGGT core (see https://github.com/facebookresearch/vggt) ---
+torch==2.3.1
+torchvision==0.18.1
+numpy==1.26.1
+Pillow
+huggingface_hub
+einops
+safetensors
+
+# --- This repo: VGGT scripts + point-cloud export ---
+opencv-python-headless
+open3d
+scipy
+
+# --- Argoverse 2 metric pipeline (feather calibration) ---
+pyarrow
+pandas
+
+# --- Optional: uncomment if needed ---
+# nuscenes-devkit          # full nuScenes API (scripts also work via JSON fallback)
+# av2                      # structured AV2 API access
+# transformers             # depth_recon.py (Depth-Anything-V2 baseline)
+# pyquaternion             # depth_recon.py, timeflow.py
+# matplotlib               # DUSt3R visualization / run_dust3r_on_av2_pairs.py

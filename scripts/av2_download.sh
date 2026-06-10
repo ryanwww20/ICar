@@ -34,6 +34,12 @@ set -euo pipefail
 #     --mode stereo_ring \
 #     --out-dir vggt/data/AV2
 #
+# 8. Download ring cameras + LiDAR sweeps:
+#   bash scripts/av2_download.sh \
+#     --num-logs 2 \
+#     --mode ring_lidar \
+#     --out-dir vggt/data/AV2
+#
 # Check downloaded images:
 #   find vggt/data/AV2/val -path "*ring_front_center*" -name "*.jpg" | head
 #
@@ -53,7 +59,7 @@ set -euo pipefail
 SPLIT="val"
 OUT_DIR="$HOME/data/av2/sensor"
 NUM_LOGS=1
-MODE="stereo"      # options: stereo, ring, stereo_ring, full
+MODE="stereo"      # options: stereo, ring, stereo_ring, ring_lidar, full
 LIST_ONLY=false
 SAVE_LOG_LIST=""
 LOG_LIST_FILE=""
@@ -95,16 +101,17 @@ while [[ $# -gt 0 ]]; do
       ;;
     -h|--help)
       echo "Usage:"
-      echo "  bash scripts/av2_download.sh [--split val|train|test] [--out-dir PATH] [--num-logs N] [--mode stereo|ring|stereo_ring|full]"
+      echo "  bash scripts/av2_download.sh [--split val|train|test] [--out-dir PATH] [--num-logs N] [--mode stereo|ring|stereo_ring|ring_lidar|full]"
       echo ""
       echo "Options:"
       echo "  --list-only              Only list available LOG_IDs"
       echo "  --save-log-list FILE     Save available LOG_IDs to FILE"
       echo "  --log-list FILE          Read LOG_IDs from FILE instead of querying S3"
-      echo "  --mode stereo|ring|stereo_ring|full"
+      echo "  --mode stereo|ring|stereo_ring|ring_lidar|full"
       echo "      stereo:      download stereo_front_left and stereo_front_right only"
       echo "      ring:        download all 7 ring cameras only"
       echo "      stereo_ring: download stereo cameras and ring cameras"
+      echo "      ring_lidar:  download all 7 ring cameras and LiDAR sweeps"
       echo "      full:        download entire log"
       exit 0
       ;;
@@ -125,8 +132,8 @@ if ! command -v s5cmd >/dev/null 2>&1; then
   exit 1
 fi
 
-if [[ "$MODE" != "stereo" && "$MODE" != "ring" && "$MODE" != "stereo_ring" && "$MODE" != "full" ]]; then
-  echo "Error: --mode must be one of: stereo, ring, stereo_ring, full"
+if [[ "$MODE" != "stereo" && "$MODE" != "ring" && "$MODE" != "stereo_ring" && "$MODE" != "ring_lidar" && "$MODE" != "full" ]]; then
+  echo "Error: --mode must be one of: stereo, ring, stereo_ring, ring_lidar, full"
   exit 1
 fi
 
@@ -329,6 +336,57 @@ download_ring_log() {
     "$base_dst/"
 }
 
+download_ring_lidar_log() {
+  local log_id="$1"
+  local base_src="$S3_ROOT/$SPLIT/$log_id"
+  local base_dst="$OUT_DIR/$SPLIT/$log_id"
+
+  echo ""
+  echo "[RING + LIDAR] Downloading log: $log_id"
+  echo "SRC base: $base_src"
+  echo "DST base: $base_dst"
+
+  mkdir -p "$base_dst/sensors/cameras"
+
+  local cameras=(
+    ring_front_center
+    ring_front_left
+    ring_front_right
+    ring_side_left
+    ring_side_right
+    ring_rear_left
+    ring_rear_right
+  )
+
+  for cam in "${cameras[@]}"; do
+    echo "Downloading camera: $cam"
+    mkdir -p "$base_dst/sensors/cameras/$cam"
+
+    s5cmd --no-sign-request cp \
+      "$base_src/sensors/cameras/$cam/*" \
+      "$base_dst/sensors/cameras/$cam/"
+  done
+
+  echo "Downloading LiDAR sweeps..."
+  mkdir -p "$base_dst/sensors/lidar"
+
+  s5cmd --no-sign-request cp \
+    "$base_src/sensors/lidar/*" \
+    "$base_dst/sensors/lidar/"
+
+  echo "Downloading calibration..."
+  mkdir -p "$base_dst/calibration"
+
+  s5cmd --no-sign-request cp \
+    "$base_src/calibration/*" \
+    "$base_dst/calibration/"
+
+  echo "Downloading city_SE3_egovehicle.feather..."
+  s5cmd --no-sign-request cp \
+    "$base_src/city_SE3_egovehicle.feather" \
+    "$base_dst/"
+}
+
 download_stereo_ring_log() {
   local log_id="$1"
   local base_src="$S3_ROOT/$SPLIT/$log_id"
@@ -394,6 +452,8 @@ for (( i=0; i<NUM_LOGS; i++ )); do
     download_ring_log "$LOG_ID"
   elif [[ "$MODE" == "stereo_ring" ]]; then
     download_stereo_ring_log "$LOG_ID"
+  elif [[ "$MODE" == "ring_lidar" ]]; then
+    download_ring_lidar_log "$LOG_ID"
   fi
 done
 

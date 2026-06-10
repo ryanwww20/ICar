@@ -22,7 +22,7 @@ grid_resolution = 0.003  # candidate spacing on the plane (m)
 plane_band = 0.06  # |dist to plane| for classifying floor points (m)
 max_fill_distance = 0.25  # must be within this distance of a floor inlier (m)
 min_hole_radius = 0.0015  # gap must be at least this far from existing floor (m)
-max_hole_radius = 0.07  # gap must be smaller than this — excludes large voids (m)
+max_hole_radius = 0.1  # gap must be smaller than this — excludes large voids (m)
 enable_large_hole_patch = True  # allow larger holes in a local ROI (e.g., near ego car)
 large_hole_center = np.array([0.0, 0.0, 0.0], dtype=np.float64)  # world-space ROI center
 large_hole_roi_radius = 0.5  # meters

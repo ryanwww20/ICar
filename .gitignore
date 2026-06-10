@@ -21,3 +21,5 @@ vggt_6cam.ply
 vggt_test1.ply
 
 vggt_sixview_scene.py
+
+.cache/

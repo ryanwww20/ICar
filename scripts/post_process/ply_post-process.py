@@ -100,6 +100,52 @@ def run_fill_hole(args: argparse.Namespace) -> None:
     fill_hole.main()
 
 
+def _bev_kwargs_from_namespace(args: argparse.Namespace) -> dict:
+    car_png = getattr(args, "bev_car_png", None)
+    return {
+        "image_size": getattr(args, "bev_size", 1024),
+        "extent_percentile": getattr(args, "bev_extent_percentile", 72.0),
+        "car_length_fraction": getattr(args, "bev_car_length_fraction", 0.11),
+        "car_png": Path(car_png) if car_png else None,
+    }
+
+
+def _export_rear_top_bev_from_ply(ply_path: Path, args: argparse.Namespace) -> Path:
+    import open3d as o3d
+
+    from add_ego_car import save_bev_png
+
+    pcd = o3d.io.read_point_cloud(str(ply_path))
+    if len(pcd.points) == 0:
+        raise RuntimeError(f"No points in {ply_path}")
+
+    bev_path = ply_path.with_name(f"{ply_path.stem}_bev.png")
+    save_bev_png(pcd, bev_path, **_bev_kwargs_from_namespace(args))
+    return bev_path
+
+
+def run_export_bev(args: argparse.Namespace) -> None:
+    """Export rear-top BEV PNG with car.png overlay; PLY is passed through unchanged."""
+    import open3d as o3d
+
+    input_path = Path(args.input)
+    output_path = Path(args.output)
+    if not input_path.exists():
+        raise FileNotFoundError(f"Input not found: {input_path}")
+
+    pcd = o3d.io.read_point_cloud(str(input_path))
+    if len(pcd.points) == 0:
+        raise RuntimeError(f"No points in {input_path}")
+
+    if input_path.resolve() != output_path.resolve():
+        o3d.io.write_point_cloud(str(output_path), pcd, write_ascii=False)
+        print(f"Copied {len(pcd.points)} points to {output_path}")
+    else:
+        print(f"Using {len(pcd.points)} points from {input_path}")
+
+    _export_rear_top_bev_from_ply(output_path, args)
+
+
 def run_full_pipeline(args: argparse.Namespace) -> None:
     """Run sky removal first, then fill_hole pipeline."""
     import open3d as o3d
@@ -141,6 +187,9 @@ def run_full_pipeline(args: argparse.Namespace) -> None:
         fill_hole.input_path = str(temp_input)
         fill_hole.output_path = args.output
         fill_hole.main()
+
+        if args.export_bev:
+            _export_rear_top_bev_from_ply(Path(args.output), args)
     finally:
         if temp_input.exists():
             temp_input.unlink()
@@ -156,6 +205,11 @@ TASKS: dict[str, Task] = {
         name="full_pipeline",
         description="Remove sky points, then execute fill_hole pipeline.",
         func=run_full_pipeline,
+    ),
+    "export_bev": Task(
+        name="export_bev",
+        description="Export rear-top BEV PNG with car.png overlay (PLY unchanged).",
+        func=run_export_bev,
     ),
 }
 
@@ -208,6 +262,43 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Absolute sky threshold in full_pipeline; overrides percentile.",
     )
+    parser.add_argument(
+        "--export-bev",
+        dest="export_bev",
+        action="store_true",
+        help="Export rear-top BEV PNG with car.png overlay after full_pipeline (default: on).",
+    )
+    parser.add_argument(
+        "--no-export-bev",
+        dest="export_bev",
+        action="store_false",
+        help="Skip the rear-top BEV PNG export.",
+    )
+    parser.add_argument(
+        "--bev-size",
+        type=int,
+        default=1024,
+        help="BEV image width/height in pixels.",
+    )
+    parser.add_argument(
+        "--bev-extent-percentile",
+        type=float,
+        default=72.0,
+        help="Radial distance percentile that sets the view zoom (sixview default: 72).",
+    )
+    parser.add_argument(
+        "--bev-car-png",
+        type=Path,
+        default=None,
+        help="Top-down car PNG (RGBA); default: scripts/car.png",
+    )
+    parser.add_argument(
+        "--bev-car-length-fraction",
+        type=float,
+        default=0.11,
+        help="Car icon length as a fraction of image size (sixview default: 0.11).",
+    )
+    parser.set_defaults(export_bev=True)
     return parser
 
 
@@ -236,6 +327,11 @@ def postprocess_ply(
     sky_side: str = "low",
     sky_keep_percentile: float = 0.9,
     sky_max: float | None = None,
+    export_bev: bool = True,
+    bev_size: int = 1024,
+    bev_extent_percentile: float = 72.0,
+    bev_car_png: Path | str | None = None,
+    bev_car_length_fraction: float = 0.11,
     visualize: bool = False,
 ) -> Path:
     """Run one post-processing task programmatically (non-interactive by default)."""
@@ -257,6 +353,11 @@ def postprocess_ply(
         sky_side=sky_side,
         sky_keep_percentile=sky_keep_percentile,
         sky_max=sky_max,
+        export_bev=export_bev,
+        bev_size=bev_size,
+        bev_extent_percentile=bev_extent_percentile,
+        bev_car_png=bev_car_png,
+        bev_car_length_fraction=bev_car_length_fraction,
     )
 
     if task not in TASKS:
@@ -281,8 +382,10 @@ def main() -> int:
     if not args.tasks:
         print("No task specified. Defaulting to: full_pipeline")
 
-    for name in task_names:
+    for idx, name in enumerate(task_names):
         try:
+            if idx > 0:
+                args.input = args.output
             execute_task(name, args)
         except KeyError:
             print(f"Unknown task: {name}", file=sys.stderr)

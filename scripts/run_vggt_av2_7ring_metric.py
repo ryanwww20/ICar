@@ -48,6 +48,7 @@ from av2_utils import (  # noqa: E402
 from ply_postprocess_common import (  # noqa: E402
     add_postprocess_args,
     maybe_postprocess_pointcloud,
+    maybe_show_pointcloud,
 )
 from vggt_nuscenes_common import (  # noqa: E402
     add_cleanup_args,
@@ -244,6 +245,12 @@ def process_frame(
     )
     post_path = maybe_postprocess_pointcloud(
         ply_path,
+        args,
+        label=f"frame {frame_idx}",
+    )
+    maybe_show_pointcloud(
+        ply_path,
+        post_path,
         args,
         label=f"frame {frame_idx}",
     )

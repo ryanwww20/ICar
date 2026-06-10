@@ -44,6 +44,7 @@ from nuscenes_utils import (  # noqa: E402
 from ply_postprocess_common import (  # noqa: E402
     add_postprocess_args,
     maybe_postprocess_pointcloud,
+    maybe_show_pointcloud,
 )
 from vggt_nuscenes_common import (  # noqa: E402
     add_nuscenes_args,
@@ -201,6 +202,12 @@ def process_sample(
     )
     post_path = maybe_postprocess_pointcloud(
         ply_path,
+        args,
+        label=f"sample {sample_idx}",
+    )
+    maybe_show_pointcloud(
+        ply_path,
+        post_path,
         args,
         label=f"sample {sample_idx}",
     )

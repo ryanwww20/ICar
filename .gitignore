@@ -19,3 +19,5 @@ timeflow.py
 v1.0-mini.tgz
 vggt_6cam.ply
 vggt_test1.ply
+
+vggt_sixview_scene.py

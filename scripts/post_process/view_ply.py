@@ -66,48 +66,72 @@ def clip_sky_points(
     return pcd.select_by_index(keep_idx), threshold, removed
 
 
-def main() -> None:
-    args = parse_args()
-
-    pcd = o3d.io.read_point_cloud(args.input)
+def show_pointcloud(
+    input_path: str,
+    *,
+    window_name: str = "Point Cloud Viewer",
+    axis_size: float = 1.0,
+    remove_sky: bool = False,
+    sky_axis: str = "y",
+    sky_keep_percentile: float = 0.98,
+    sky_max: float | None = None,
+) -> None:
+    """Load a PLY and open an Open3D viewer (same behavior as this script's CLI)."""
+    pcd = o3d.io.read_point_cloud(input_path)
     if len(pcd.points) == 0:
-        print(f"Error: no points found in {args.input}", file=sys.stderr)
-        sys.exit(1)
+        raise ValueError(f"No points found in {input_path}")
 
     n_pts = len(pcd.points)
     has_colors = pcd.has_colors()
     has_normals = pcd.has_normals()
-    print(f"Loaded {n_pts} points from {args.input}")
+    print(f"Loaded {n_pts} points from {input_path}")
     print(f"  colors: {'yes' if has_colors else 'no'}")
     print(f"  normals: {'yes' if has_normals else 'no'}")
 
     if not has_colors:
         pcd.paint_uniform_color([0.6, 0.6, 0.6])
 
-    if args.remove_sky:
+    if remove_sky:
         pcd, threshold, removed = clip_sky_points(
             pcd,
-            axis=args.sky_axis,
-            keep_percentile=args.sky_keep_percentile,
-            sky_max=args.sky_max,
+            axis=sky_axis,
+            keep_percentile=sky_keep_percentile,
+            sky_max=sky_max,
         )
         print(
-            f"Sky clipping on {args.sky_axis}-axis: threshold={threshold:.4f}, "
+            f"Sky clipping on {sky_axis}-axis: threshold={threshold:.4f}, "
             f"removed={removed}, remaining={len(pcd.points)}"
         )
         if len(pcd.points) == 0:
-            print("Error: all points removed by sky clipping", file=sys.stderr)
-            sys.exit(1)
+            raise ValueError("All points removed by sky clipping")
 
     geometries = [pcd]
-    if args.axis_size > 0:
-        axes = o3d.geometry.TriangleMesh.create_coordinate_frame(size=args.axis_size)
+    if axis_size > 0:
+        axes = o3d.geometry.TriangleMesh.create_coordinate_frame(size=axis_size)
         geometries.append(axes)
 
     o3d.visualization.draw_geometries(
         geometries,
-        window_name=args.window_name,
+        window_name=window_name,
     )
+
+
+def main() -> None:
+    args = parse_args()
+
+    try:
+        show_pointcloud(
+            args.input,
+            window_name=args.window_name,
+            axis_size=args.axis_size,
+            remove_sky=args.remove_sky,
+            sky_axis=args.sky_axis,
+            sky_keep_percentile=args.sky_keep_percentile,
+            sky_max=args.sky_max,
+        )
+    except ValueError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        sys.exit(1)
 
 
 if __name__ == "__main__":

@@ -205,6 +205,84 @@ def load_vggt_model(model_id: str, device: str):
     return VGGT.from_pretrained(model_id).to(device).eval()
 
 
+def _sync_device(device: str) -> None:
+    if device == "cuda":
+        import torch
+
+        torch.cuda.synchronize()
+
+
+def run_vggt_multi_timed(
+    model,
+    image_paths: list[Path],
+    device: str,
+) -> tuple[dict, dict[str, float]]:
+    """Run VGGT on multiple views; return predictions and per-step timings (seconds)."""
+    import time
+
+    import torch
+    from vggt.utils.load_fn import load_and_preprocess_images
+    from vggt.utils.pose_enc import pose_encoding_to_extri_intri
+
+    from vggt_timing import TIMING_DECODE, TIMING_INFERENCE, TIMING_PREPROCESS
+
+    dtype = (
+        torch.bfloat16
+        if device == "cuda" and torch.cuda.get_device_capability()[0] >= 8
+        else torch.float16
+    )
+
+    timings: dict[str, float] = {
+        TIMING_PREPROCESS: 0.0,
+        TIMING_INFERENCE: 0.0,
+        TIMING_DECODE: 0.0,
+    }
+
+    paths = [str(p) for p in image_paths]
+    _sync_device(device)
+    t0 = time.perf_counter()
+    images = load_and_preprocess_images(paths).to(device)
+    _sync_device(device)
+    timings[TIMING_PREPROCESS] = time.perf_counter() - t0
+    print(f"[vggt] input shape: {tuple(images.shape)} ({len(paths)} views)")
+
+    with torch.no_grad():
+        _sync_device(device)
+        t0 = time.perf_counter()
+        if device == "cuda":
+            with torch.cuda.amp.autocast(dtype=dtype):
+                pred = model(images)
+        else:
+            pred = model(images.float())
+        _sync_device(device)
+        timings[TIMING_INFERENCE] = time.perf_counter() - t0
+
+    proc_hw = (images.shape[-2], images.shape[-1])
+    _sync_device(device)
+    t0 = time.perf_counter()
+    extr, intr = pose_encoding_to_extri_intri(pred["pose_enc"], proc_hw)
+    extr = extr[0].cpu().numpy()
+    intr = intr[0].cpu().numpy()
+    depth = pred["depth"].squeeze(0).squeeze(-1).float().cpu().numpy()
+    depth_conf = pred["depth_conf"].squeeze(0).float().cpu().numpy()
+    world_points = pred["world_points"].squeeze(0).float().cpu().numpy()
+    world_conf = pred["world_points_conf"].squeeze(0).float().cpu().numpy()
+    images_out = pred["images"].squeeze(0).float().cpu().numpy()
+    _sync_device(device)
+    timings[TIMING_DECODE] = time.perf_counter() - t0
+
+    return {
+        "depth": depth,
+        "depth_conf": depth_conf,
+        "world_points": world_points,
+        "world_conf": world_conf,
+        "images": images_out,
+        "extrinsic": extr,
+        "intrinsic": intr,
+        "proc_hw": proc_hw,
+    }, timings
+
+
 def run_vggt_multi(model, image_paths: list[Path], device: str) -> dict:
     import torch
     from vggt.utils.load_fn import load_and_preprocess_images

@@ -4,7 +4,9 @@
 from __future__ import annotations
 
 import argparse
+import ctypes.util
 import importlib.util
+import os
 from pathlib import Path
 import sys
 
@@ -65,6 +67,9 @@ def add_postprocess_args(parser: argparse.ArgumentParser) -> None:
         sys.path.insert(0, post_dir)
     from add_ego_car import (
         DEFAULT_CAR_LENGTH_M,
+        DEFAULT_CAR_OFFSET_X,
+        DEFAULT_CAR_OFFSET_Y,
+        DEFAULT_CAR_OFFSET_Z,
         DEFAULT_CAR_PITCH_DEG,
         DEFAULT_CAR_ROLL_DEG,
         DEFAULT_CAR_SAMPLE_SPACING,
@@ -158,6 +163,12 @@ def add_postprocess_args(parser: argparse.ArgumentParser) -> None:
         help="Ego car GLB path (default: scripts/post_process/car_glb.glb).",
     )
     group.add_argument(
+        "--car-ply",
+        type=Path,
+        default=None,
+        help="Pre-baked ego car PLY (default: scripts/post_process/car_glb.ply).",
+    )
+    group.add_argument(
         "--car-length-m",
         type=float,
         default=DEFAULT_CAR_LENGTH_M,
@@ -190,26 +201,26 @@ def add_postprocess_args(parser: argparse.ArgumentParser) -> None:
     group.add_argument(
         "--car-offset-x",
         type=float,
-        default=0.0,
+        default=DEFAULT_CAR_OFFSET_X,
         help="Car world +X offset from rig center (meters).",
     )
     group.add_argument(
         "--car-offset-y",
         type=float,
-        default=0.0,
+        default=DEFAULT_CAR_OFFSET_Y,
         help="Car world +Y offset from ground (meters).",
     )
     group.add_argument(
         "--car-offset-z",
         type=float,
-        default=0.0,
+        default=DEFAULT_CAR_OFFSET_Z,
         help="Car world +Z offset from rig center (meters).",
     )
     group.add_argument(
         "--car-sample-spacing",
         type=float,
         default=DEFAULT_CAR_SAMPLE_SPACING,
-        help="Base voxel spacing for car mesh (scales with --car-length-m).",
+        help="Surface sample spacing when baking GLB→PLY (smaller = denser).",
     )
 
     vis = parser.add_argument_group("Point cloud visualization")
@@ -233,6 +244,15 @@ def add_postprocess_args(parser: argparse.ArgumentParser) -> None:
     )
 
     parser.set_defaults(post_process=True, visualize=True, export_bev=True, add_car_glb=True)
+
+
+def _interactive_visualize_available() -> bool:
+    """Return False on headless nodes where Open3D GUI would segfault."""
+    if os.environ.get("ICAR_FORCE_VISUALIZE") == "1":
+        return True
+    if os.environ.get("DISPLAY"):
+        return True
+    return ctypes.util.find_library("EGL") is not None
 
 
 def maybe_postprocess_pointcloud(
@@ -278,6 +298,7 @@ def maybe_postprocess_pointcloud(
         bev_car_length_fraction=args.bev_car_length_fraction,
         add_car_glb=args.add_car_glb,
         car_glb=args.car_glb,
+        car_ply=args.car_ply,
         car_length_m=args.car_length_m,
         car_scale=args.car_scale,
         car_yaw_deg=args.car_yaw_deg,
@@ -303,6 +324,12 @@ def maybe_show_pointcloud(
 ) -> None:
     """Open the final point cloud in an Open3D viewer when enabled."""
     if dry_run or not args.visualize:
+        return
+    if not _interactive_visualize_available():
+        print(
+            f"[{label}] skip visualize: headless environment "
+            f"(no DISPLAY / libEGL; use --no-visualize or set ICAR_FORCE_VISUALIZE=1)"
+        )
         return
 
     show_path = post_path if post_path is not None else ply_path

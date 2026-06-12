@@ -96,6 +96,9 @@ def _apply_car_config_to_fill_hole(args: argparse.Namespace) -> None:
     import fill_hole
     from add_ego_car import (
         DEFAULT_CAR_LENGTH_M,
+        DEFAULT_CAR_OFFSET_X,
+        DEFAULT_CAR_OFFSET_Y,
+        DEFAULT_CAR_OFFSET_Z,
         DEFAULT_CAR_PITCH_DEG,
         DEFAULT_CAR_ROLL_DEG,
         DEFAULT_CAR_SAMPLE_SPACING,
@@ -106,14 +109,16 @@ def _apply_car_config_to_fill_hole(args: argparse.Namespace) -> None:
     fill_hole.add_car_glb = bool(getattr(args, "add_car_glb", True))
     car_glb = getattr(args, "car_glb", None)
     fill_hole.car_glb_path = str(car_glb) if car_glb else None
+    car_ply = getattr(args, "car_ply", None)
+    fill_hole.car_ply_path = str(car_ply) if car_ply else None
     fill_hole.car_length_m = float(getattr(args, "car_length_m", DEFAULT_CAR_LENGTH_M))
     fill_hole.car_scale = getattr(args, "car_scale", DEFAULT_CAR_SCALE)
     fill_hole.car_yaw_deg = float(getattr(args, "car_yaw_deg", DEFAULT_CAR_YAW_DEG))
     fill_hole.car_pitch_deg = float(getattr(args, "car_pitch_deg", DEFAULT_CAR_PITCH_DEG))
     fill_hole.car_roll_deg = float(getattr(args, "car_roll_deg", DEFAULT_CAR_ROLL_DEG))
-    fill_hole.car_offset_x = float(getattr(args, "car_offset_x", 0.0))
-    fill_hole.car_offset_y = float(getattr(args, "car_offset_y", 0.0))
-    fill_hole.car_offset_z = float(getattr(args, "car_offset_z", 0.0))
+    fill_hole.car_offset_x = float(getattr(args, "car_offset_x", DEFAULT_CAR_OFFSET_X))
+    fill_hole.car_offset_y = float(getattr(args, "car_offset_y", DEFAULT_CAR_OFFSET_Y))
+    fill_hole.car_offset_z = float(getattr(args, "car_offset_z", DEFAULT_CAR_OFFSET_Z))
     fill_hole.car_sample_spacing = float(
         getattr(args, "car_sample_spacing", DEFAULT_CAR_SAMPLE_SPACING)
     )
@@ -252,6 +257,9 @@ TASKS: dict[str, Task] = {
 def build_parser() -> argparse.ArgumentParser:
     from add_ego_car import (
         DEFAULT_CAR_LENGTH_M,
+        DEFAULT_CAR_OFFSET_X,
+        DEFAULT_CAR_OFFSET_Y,
+        DEFAULT_CAR_OFFSET_Z,
         DEFAULT_CAR_PITCH_DEG,
         DEFAULT_CAR_ROLL_DEG,
         DEFAULT_CAR_SAMPLE_SPACING,
@@ -362,6 +370,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="Ego car GLB path (default: scripts/post_process/car_glb.glb).",
     )
     car.add_argument(
+        "--car-ply",
+        type=Path,
+        default=None,
+        help="Pre-baked ego car PLY (default: scripts/post_process/car_glb.ply).",
+    )
+    car.add_argument(
         "--car-length-m",
         type=float,
         default=DEFAULT_CAR_LENGTH_M,
@@ -394,26 +408,26 @@ def build_parser() -> argparse.ArgumentParser:
     car.add_argument(
         "--car-offset-x",
         type=float,
-        default=0.0,
+        default=DEFAULT_CAR_OFFSET_X,
         help="World +X offset from rig center (meters).",
     )
     car.add_argument(
         "--car-offset-y",
         type=float,
-        default=0.0,
+        default=DEFAULT_CAR_OFFSET_Y,
         help="World +Y offset from ground (meters; +Y is down).",
     )
     car.add_argument(
         "--car-offset-z",
         type=float,
-        default=0.0,
+        default=DEFAULT_CAR_OFFSET_Z,
         help="World +Z offset from rig center (meters).",
     )
     car.add_argument(
         "--car-sample-spacing",
         type=float,
         default=DEFAULT_CAR_SAMPLE_SPACING,
-        help="Base voxel spacing for car mesh sampling (scales down with --car-length-m).",
+        help="Surface sample spacing when baking GLB→PLY (smaller = denser).",
     )
     car.add_argument(
         "--bev-overlay-car-png",
@@ -463,14 +477,15 @@ def postprocess_ply(
     bev_car_length_fraction: float = 0.11,
     add_car_glb: bool = True,
     car_glb: Path | str | None = None,
+    car_ply: Path | str | None = None,
     car_length_m: float | None = None,
     car_scale: float | None = None,
     car_yaw_deg: float | None = None,
     car_pitch_deg: float | None = None,
     car_roll_deg: float | None = None,
-    car_offset_x: float = 0.0,
-    car_offset_y: float = 0.0,
-    car_offset_z: float = 0.0,
+    car_offset_x: float | None = None,
+    car_offset_y: float | None = None,
+    car_offset_z: float | None = None,
     car_sample_spacing: float | None = None,
     bev_overlay_car_png: bool | None = None,
     visualize: bool = False,
@@ -489,6 +504,9 @@ def postprocess_ply(
 
     from add_ego_car import (
         DEFAULT_CAR_LENGTH_M,
+        DEFAULT_CAR_OFFSET_X,
+        DEFAULT_CAR_OFFSET_Y,
+        DEFAULT_CAR_OFFSET_Z,
         DEFAULT_CAR_PITCH_DEG,
         DEFAULT_CAR_ROLL_DEG,
         DEFAULT_CAR_SAMPLE_SPACING,
@@ -510,6 +528,12 @@ def postprocess_ply(
         car_roll_deg = DEFAULT_CAR_ROLL_DEG
     if car_sample_spacing is None:
         car_sample_spacing = DEFAULT_CAR_SAMPLE_SPACING
+    if car_offset_x is None:
+        car_offset_x = DEFAULT_CAR_OFFSET_X
+    if car_offset_y is None:
+        car_offset_y = DEFAULT_CAR_OFFSET_Y
+    if car_offset_z is None:
+        car_offset_z = DEFAULT_CAR_OFFSET_Z
 
     args = argparse.Namespace(
         input=str(input_path),
@@ -525,6 +549,7 @@ def postprocess_ply(
         bev_car_length_fraction=bev_car_length_fraction,
         add_car_glb=add_car_glb,
         car_glb=car_glb,
+        car_ply=car_ply,
         car_length_m=car_length_m,
         car_scale=car_scale,
         car_yaw_deg=car_yaw_deg,

@@ -24,6 +24,8 @@ safetensors
 opencv-python-headless
 open3d
 scipy
+trimesh
+Pillow
 
 # --- Argoverse 2 metric pipeline (feather calibration) ---
 pyarrow

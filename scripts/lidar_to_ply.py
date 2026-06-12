@@ -10,6 +10,12 @@ LiDAR 在 AV2 已 egomotion-compensated 到 ego frame，本身 metric。
 跑:
   python av2_lidar_to_ply.py --av2-root /path/AV2 --split val --log-id <UUID> --frame-idx 0
   python av2_lidar_to_ply.py --av2-root /path/AV2 --split val --list
+  justin@please-3 ICar % python scripts/lidar_to_ply.py \                         
+    --av2-root /Users/justin/Desktop/ICar/vggt/data/AV2 \
+    --split val \
+    --log-id 02a00399-3857-444e-8db3-a8f58489c394 \
+    --frame-idx 0 \
+    --no-axes
 """
 
 from __future__ import annotations

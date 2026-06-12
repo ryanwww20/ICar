@@ -45,7 +45,18 @@ from ply_postprocess_common import (  # noqa: E402
 from vggt_nuscenes_common import (  # noqa: E402
     pointcloud_output_path,
     add_cleanup_args,
+    load_vggt_model,
+    run_vggt_multi_timed,
     write_pointcloud,
+)
+from vggt_timing import (  # noqa: E402
+    TIMING_MODEL_LOAD,
+    TIMING_POINTCLOUD_EXPORT,
+    TIMING_POST_PROCESS,
+    empty_frame_timings,
+    empty_startup_timings,
+    print_automotive_timing_analysis,
+    timing_to_metadata,
 )
 
 RING_CAMERAS = (
@@ -57,38 +68,6 @@ RING_CAMERAS = (
     "ring_rear_left",
     "ring_rear_right",
 )
-
-TIMING_VGGT_MODEL = "vggt_model"
-TIMING_POST_PROCESS = "post_process"
-
-
-def print_timing_analysis(
-    timings: dict[str, float],
-    *,
-    label: str = "",
-) -> None:
-    """Print high-level timing breakdown (VGGT model vs post-process)."""
-    vggt_s = timings.get(TIMING_VGGT_MODEL, 0.0)
-    post_s = timings.get(TIMING_POST_PROCESS, 0.0)
-    vggt_ms = vggt_s * 1000.0
-    post_ms = post_s * 1000.0
-    total_ms = vggt_ms + post_ms
-
-    header = "=== Timing analysis"
-    if label:
-        header += f" ({label})"
-    header += " ==="
-    print(f"\n{header}")
-    if total_ms <= 0:
-        print("  (no timed steps)")
-        return
-
-    vggt_pct = 100.0 * vggt_ms / total_ms
-    post_pct = 100.0 * post_ms / total_ms
-    print(f"  1. VGGT model time:   {vggt_ms:8.1f} ms ({vggt_pct:5.1f}%)")
-    print(f"  2. Post process time: {post_ms:8.1f} ms ({post_pct:5.1f}%)")
-    print(f"     Total:             {total_ms:8.1f} ms")
-
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
@@ -217,59 +196,6 @@ def world_points_to_ply(
     return np.concatenate(pts_list, axis=0), np.concatenate(col_list, axis=0)
 
 
-def run_vggt_seven(
-    image_paths: list[Path],
-    device: str,
-    model_id: str,
-) -> dict:
-    import torch
-    from vggt.models.vggt import VGGT
-    from vggt.utils.load_fn import load_and_preprocess_images
-    from vggt.utils.pose_enc import pose_encoding_to_extri_intri
-
-    dtype = (
-        torch.bfloat16
-        if device == "cuda" and torch.cuda.get_device_capability()[0] >= 8
-        else torch.float16
-    )
-
-    print(f"[vggt] loading model {model_id} on {device} ...")
-    model = VGGT.from_pretrained(model_id).to(device).eval()
-
-    paths = [str(p) for p in image_paths]
-    images = load_and_preprocess_images(paths).to(device)
-    print(f"[vggt] input shape: {tuple(images.shape)} ({len(paths)} views)")
-
-    with torch.no_grad():
-        if device == "cuda":
-            with torch.cuda.amp.autocast(dtype=dtype):
-                pred = model(images)
-        else:
-            pred = model(images.float())
-
-    proc_hw = (images.shape[-2], images.shape[-1])
-    extr, intr = pose_encoding_to_extri_intri(pred["pose_enc"], proc_hw)
-    extr = extr[0].cpu().numpy()
-    intr = intr[0].cpu().numpy()
-
-    depth = pred["depth"].squeeze(0).squeeze(-1).float().cpu().numpy()
-    depth_conf = pred["depth_conf"].squeeze(0).float().cpu().numpy()
-    world_points = pred["world_points"].squeeze(0).float().cpu().numpy()
-    world_conf = pred["world_points_conf"].squeeze(0).float().cpu().numpy()
-    images_out = pred["images"].squeeze(0).float().cpu().numpy()
-
-    return {
-        "depth": depth,
-        "depth_conf": depth_conf,
-        "world_points": world_points,
-        "world_conf": world_conf,
-        "images": images_out,
-        "extrinsic": extr,
-        "intrinsic": intr,
-        "proc_hw": proc_hw,
-    }
-
-
 def process_frame(
     log_dir: Path,
     scene_label: str,
@@ -279,11 +205,9 @@ def process_frame(
     args: argparse.Namespace,
     device: str,
     scene_index: int,
+    model,
 ) -> dict[str, float]:
-    timings: dict[str, float] = {
-        TIMING_VGGT_MODEL: 0.0,
-        TIMING_POST_PROCESS: 0.0,
-    }
+    timings = empty_frame_timings()
     views = collect_seven_ring_views(log_dir, frame_idx)
     frame_dir = out_dir / f"frame_{frame_idx:06d}"
     frame_dir.mkdir(parents=True, exist_ok=True)
@@ -327,9 +251,8 @@ def process_frame(
         return timings
 
     image_paths = [path for _, path, _ in views]
-    t0 = time.perf_counter()
-    pred = run_vggt_seven(image_paths, device, args.model_id)
-    timings[TIMING_VGGT_MODEL] = time.perf_counter() - t0
+    pred, infer_timings = run_vggt_multi_timed(model, image_paths, device)
+    timings.update(infer_timings)
 
     cameras_out = {
         "extrinsic": pred["extrinsic"].tolist(),
@@ -352,6 +275,7 @@ def process_frame(
         args.conf_thresh,
         args.pixel_stride,
     )
+    t0 = time.perf_counter()
     write_pointcloud(
         ply_path,
         pts,
@@ -360,6 +284,7 @@ def process_frame(
         no_cleanup=args.no_cleanup,
         label=f"frame {frame_idx}",
     )
+    timings[TIMING_POINTCLOUD_EXPORT] = time.perf_counter() - t0
     t0 = time.perf_counter()
     post_path = maybe_postprocess_pointcloud(
         ply_path,
@@ -367,7 +292,6 @@ def process_frame(
         label=f"frame {frame_idx}",
     )
     timings[TIMING_POST_PROCESS] = time.perf_counter() - t0
-    print_timing_analysis(timings, label=f"frame {frame_idx}")
     maybe_show_pointcloud(
         ply_path,
         post_path,
@@ -471,10 +395,14 @@ def main() -> int:
         json.dump(run_summary, f, indent=2)
 
     status = 0
-    total_timings: dict[str, float] = {
-        TIMING_VGGT_MODEL: 0.0,
-        TIMING_POST_PROCESS: 0.0,
-    }
+    startup_timings = empty_startup_timings()
+    model = None
+    if not args.dry_run:
+        t0 = time.perf_counter()
+        model = load_vggt_model(args.model_id, device)
+        startup_timings[TIMING_MODEL_LOAD] = time.perf_counter() - t0
+
+    frame_timings_list: list[dict[str, float]] = []
     for offset in range(args.num_frames):
         frame_idx = args.frame_idx + offset
         try:
@@ -487,9 +415,9 @@ def main() -> int:
                 args,
                 device,
                 scene_index,
+                model,
             )
-            for key in total_timings:
-                total_timings[key] += frame_timings.get(key, 0.0)
+            frame_timings_list.append(frame_timings)
         except ValueError as exc:
             print(f"ERROR: {exc}", file=sys.stderr)
             return 1
@@ -500,9 +428,19 @@ def main() -> int:
             traceback.print_exc()
             return 1
 
-    if args.num_frames > 1:
-        print_timing_analysis(total_timings, label=f"{args.num_frames} frames")
-    run_summary["timing_s"] = total_timings
+    if frame_timings_list:
+        label = (
+            f"frame {args.frame_idx}"
+            if args.num_frames == 1
+            else f"{args.num_frames} frames (avg)"
+        )
+        print_automotive_timing_analysis(
+            startup_timings,
+            frame_timings_list,
+            label=label,
+        )
+
+    run_summary["timing_s"] = timing_to_metadata(startup_timings, frame_timings_list)
     with (out_dir / "run_summary.json").open("w", encoding="utf-8") as f:
         json.dump(run_summary, f, indent=2)
 

@@ -51,6 +51,9 @@ save_output = True
 def _car_defaults():
     from add_ego_car import (
         DEFAULT_CAR_LENGTH_M,
+        DEFAULT_CAR_OFFSET_X,
+        DEFAULT_CAR_OFFSET_Y,
+        DEFAULT_CAR_OFFSET_Z,
         DEFAULT_CAR_PITCH_DEG,
         DEFAULT_CAR_ROLL_DEG,
         DEFAULT_CAR_SAMPLE_SPACING,
@@ -64,6 +67,9 @@ def _car_defaults():
         "yaw_deg": DEFAULT_CAR_YAW_DEG,
         "pitch_deg": DEFAULT_CAR_PITCH_DEG,
         "roll_deg": DEFAULT_CAR_ROLL_DEG,
+        "offset_x": DEFAULT_CAR_OFFSET_X,
+        "offset_y": DEFAULT_CAR_OFFSET_Y,
+        "offset_z": DEFAULT_CAR_OFFSET_Z,
         "sample_spacing": DEFAULT_CAR_SAMPLE_SPACING,
     }
 
@@ -71,14 +77,15 @@ def _car_defaults():
 _car_def = _car_defaults()
 add_car_glb = True
 car_glb_path = None  # default: scripts/post_process/car_glb.glb
+car_ply_path = None  # default: scripts/post_process/car_glb.ply
 car_length_m = _car_def["length_m"]
 car_scale = _car_def["scale"]
 car_yaw_deg = _car_def["yaw_deg"]
 car_pitch_deg = _car_def["pitch_deg"]
 car_roll_deg = _car_def["roll_deg"]
-car_offset_x = 0.0
-car_offset_y = 0.0
-car_offset_z = 0.0
+car_offset_x = _car_def["offset_x"]
+car_offset_y = _car_def["offset_y"]
+car_offset_z = _car_def["offset_z"]
 car_sample_spacing = _car_def["sample_spacing"]
 
 
@@ -577,6 +584,7 @@ def main():
 
             car_cfg = CarGlbConfig(
                 glb_path=Path(car_glb_path) if car_glb_path else DEFAULT_CAR_GLB,
+                ply_path=Path(car_ply_path) if car_ply_path else None,
                 enabled=True,
                 length_m=float(car_length_m),
                 scale=car_scale,
@@ -589,7 +597,7 @@ def main():
                 sample_spacing=float(car_sample_spacing),
             )
             merged_pcd = merge_car_glb_into_pcd(merged_pcd, car_cfg)
-            timer.tick("merge car GLB")
+            timer.tick("merge car")
         o3d.io.write_point_cloud(output_path, merged_pcd, write_ascii=False)
         timer.tick("write ply")
         print(

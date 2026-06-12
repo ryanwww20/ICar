@@ -2,6 +2,7 @@ import time
 
 import numpy as np
 import open3d as o3d
+from scipy.ndimage import distance_transform_edt
 from scipy.interpolate import griddata
 from scipy.spatial import ConvexHull, Delaunay, cKDTree
 
@@ -43,8 +44,42 @@ white_roi_radius = 2.0  # meters; only remove white points within this radius of
 white_luma_threshold = 0.80  # mean(R,G,B) above this is treated as "white"
 use_green_fill = False  # True: solid green fill points; False: interpolate from floor colors
 show_inlier_points = False  # True: overlay RANSAC floor inliers in red
-visualize = True
+visualize = False
 save_output = True
+
+# Ego car GLB merged into output PLY (defaults from add_ego_car — edit DEFAULT_CAR_* there).
+def _car_defaults():
+    from add_ego_car import (
+        DEFAULT_CAR_LENGTH_M,
+        DEFAULT_CAR_PITCH_DEG,
+        DEFAULT_CAR_ROLL_DEG,
+        DEFAULT_CAR_SAMPLE_SPACING,
+        DEFAULT_CAR_SCALE,
+        DEFAULT_CAR_YAW_DEG,
+    )
+
+    return {
+        "length_m": DEFAULT_CAR_LENGTH_M,
+        "scale": DEFAULT_CAR_SCALE,
+        "yaw_deg": DEFAULT_CAR_YAW_DEG,
+        "pitch_deg": DEFAULT_CAR_PITCH_DEG,
+        "roll_deg": DEFAULT_CAR_ROLL_DEG,
+        "sample_spacing": DEFAULT_CAR_SAMPLE_SPACING,
+    }
+
+
+_car_def = _car_defaults()
+add_car_glb = True
+car_glb_path = None  # default: scripts/post_process/car_glb.glb
+car_length_m = _car_def["length_m"]
+car_scale = _car_def["scale"]
+car_yaw_deg = _car_def["yaw_deg"]
+car_pitch_deg = _car_def["pitch_deg"]
+car_roll_deg = _car_def["roll_deg"]
+car_offset_x = 0.0
+car_offset_y = 0.0
+car_offset_z = 0.0
+car_sample_spacing = _car_def["sample_spacing"]
 
 
 class StepTimer:
@@ -261,6 +296,58 @@ def interpolate_colors_uv(
     return np.clip(colors, 0.0, 1.0)
 
 
+def fill_colors_uv_nearest_grid(
+    hole_uv: np.ndarray,
+    floor_uv: np.ndarray,
+    floor_colors: np.ndarray,
+    resolution: float,
+) -> np.ndarray:
+    """
+    Fill hole colors using sixview-style nearest valid grid color propagation.
+
+    Steps:
+    1) bin floor colors onto a UV grid,
+    2) fill invalid cells from nearest valid cell (distance transform),
+    3) sample filled grid at hole UV cells.
+    """
+    if len(hole_uv) == 0:
+        return np.zeros((0, 3), dtype=np.float64)
+    if len(floor_uv) == 0:
+        return np.full((len(hole_uv), 3), 0.6, dtype=np.float64)
+
+    uv_min = floor_uv.min(axis=0)
+    uv_max = floor_uv.max(axis=0)
+    res = max(float(resolution), 1e-6)
+
+    gx = max(int(np.ceil((uv_max[0] - uv_min[0]) / res)) + 1, 2)
+    gy = max(int(np.ceil((uv_max[1] - uv_min[1]) / res)) + 1, 2)
+
+    iu = np.clip(np.round((floor_uv[:, 0] - uv_min[0]) / res).astype(np.int32), 0, gx - 1)
+    iv = np.clip(np.round((floor_uv[:, 1] - uv_min[1]) / res).astype(np.int32), 0, gy - 1)
+
+    color_sum = np.zeros((gy, gx, 3), dtype=np.float64)
+    count = np.zeros((gy, gx), dtype=np.int32)
+    for i in range(len(floor_uv)):
+        color_sum[iv[i], iu[i]] += floor_colors[i]
+        count[iv[i], iu[i]] += 1
+
+    valid = count > 0
+    if not valid.any():
+        return np.full((len(hole_uv), 3), 0.6, dtype=np.float64)
+
+    color_grid = np.zeros((gy, gx, 3), dtype=np.float64)
+    color_grid[valid] = color_sum[valid] / count[valid, None]
+
+    invalid = ~valid
+    _, indices = distance_transform_edt(invalid, return_indices=True)
+    filled_grid = color_grid.copy()
+    filled_grid[invalid] = color_grid[indices[0][invalid], indices[1][invalid]]
+
+    hu = np.clip(np.round((hole_uv[:, 0] - uv_min[0]) / res).astype(np.int32), 0, gx - 1)
+    hv = np.clip(np.round((hole_uv[:, 1] - uv_min[1]) / res).astype(np.int32), 0, gy - 1)
+    return np.clip(filled_grid[hv, hu], 0.0, 1.0)
+
+
 def nearest_colors(pcd: o3d.geometry.PointCloud, query_pts: np.ndarray) -> np.ndarray:
     if pcd.has_colors():
         tree = cKDTree(np.asarray(pcd.points))
@@ -346,11 +433,11 @@ def fill_holes_on_plane(
                 timer.tick("fill: green color")
         else:
             floor_colors = nearest_colors(original_pcd, floor_pts)
-            filled_colors = interpolate_colors_uv(
-                filled_uv, floor_uv, floor_colors, interp_method, rng
+            filled_colors = fill_colors_uv_nearest_grid(
+                filled_uv, floor_uv, floor_colors, resolution
             )
             if timer:
-                timer.tick("fill: color interpolation")
+                timer.tick("fill: color nearest-grid")
 
     stats = {
         "hull_candidates": len(candidates_uv),
@@ -456,7 +543,7 @@ def main():
         timer=timer,
     )
 
-    color_mode = "green" if use_green_fill else interp_method
+    color_mode = "green" if use_green_fill else "nearest_grid"
     print(
         f"Hull grid candidates: {stats['hull_candidates']}, "
         f"accepted fills: {stats['hole_cells']} "
@@ -483,6 +570,26 @@ def main():
             raise RuntimeError("No fill points produced; nothing to save.")
         merged_pcd = merge_point_clouds(pcd, filled_pts, filled_colors)
         timer.tick("merge point clouds")
+        if add_car_glb:
+            from pathlib import Path
+
+            from add_ego_car import DEFAULT_CAR_GLB, CarGlbConfig, merge_car_glb_into_pcd
+
+            car_cfg = CarGlbConfig(
+                glb_path=Path(car_glb_path) if car_glb_path else DEFAULT_CAR_GLB,
+                enabled=True,
+                length_m=float(car_length_m),
+                scale=car_scale,
+                yaw_deg=float(car_yaw_deg),
+                pitch_deg=float(car_pitch_deg),
+                roll_deg=float(car_roll_deg),
+                offset_x=float(car_offset_x),
+                offset_y=float(car_offset_y),
+                offset_z=float(car_offset_z),
+                sample_spacing=float(car_sample_spacing),
+            )
+            merged_pcd = merge_car_glb_into_pcd(merged_pcd, car_cfg)
+            timer.tick("merge car GLB")
         o3d.io.write_point_cloud(output_path, merged_pcd, write_ascii=False)
         timer.tick("write ply")
         print(

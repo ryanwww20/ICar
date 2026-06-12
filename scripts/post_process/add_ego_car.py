@@ -1,8 +1,4 @@
-"""Open3D rear-top perspective render of a point cloud with a car.png overlay.
-
-Instead of a hand-rolled projection, this uses Open3D's offscreen (EGL headless)
-renderer so the result looks exactly like an interactive Open3D viewport placed
-behind and above the ego, looking forward down the road.
+"""Open3D rear-top BEV render and ego-car placement (GLB mesh or PNG overlay).
 
 Coordinate conventions (VGGT / OpenCV native, no axis flip):
 - +Z: forward (into the scene)
@@ -12,12 +8,15 @@ Coordinate conventions (VGGT / OpenCV native, no axis flip):
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
 
-SCRIPT_DIR = Path(__file__).resolve().parents[1]
+POST_PROCESS_DIR = Path(__file__).resolve().parent
+SCRIPT_DIR = POST_PROCESS_DIR.parent
 DEFAULT_CAR_PNG = SCRIPT_DIR / "car.png"
+DEFAULT_CAR_GLB = POST_PROCESS_DIR / "car_glb.glb"
 
 # Render defaults (edit here).
 IMAGE_SIZE = 1024
@@ -35,9 +34,224 @@ LOOK_DOWN = 0.0                 # extra downward offset of the look-at target (t
 FIELD_OF_VIEW = 40.0            # vertical field of view in degrees
 CENTER_VIEW_ITERS = 10          # iterations to nudge look-at so points land in image center
 
-# Car icon overlay.
+# Car icon overlay (BEV PNG fallback when GLB is not merged into the PLY).
 CAR_LENGTH_FRACTION = 0.09
 CAR_OFFSET_X = 0.35       # shift car icon along world +X (meters)
+
+# GLB ego car defaults (merged into output PLY).
+DEFAULT_CAR_LENGTH_M = 5
+DEFAULT_CAR_SCALE = 0.5          # extra uniform scale after length normalization
+DEFAULT_CAR_YAW_DEG = 0.0
+DEFAULT_CAR_PITCH_DEG = 180.0
+DEFAULT_CAR_ROLL_DEG = 0.0
+DEFAULT_CAR_SAMPLE_SPACING = 0.15
+
+
+@dataclass
+class CarGlbConfig:
+    """Placement of ``car_glb.glb`` merged into a scene point cloud."""
+
+    glb_path: Path = DEFAULT_CAR_GLB
+    enabled: bool = True
+    length_m: float = DEFAULT_CAR_LENGTH_M
+    scale: float | None = DEFAULT_CAR_SCALE
+    yaw_deg: float = DEFAULT_CAR_YAW_DEG
+    pitch_deg: float = DEFAULT_CAR_PITCH_DEG
+    roll_deg: float = DEFAULT_CAR_ROLL_DEG
+    offset_x: float = 0.0
+    offset_y: float = 0.0
+    offset_z: float = 0.0
+    sample_spacing: float = DEFAULT_CAR_SAMPLE_SPACING
+    anchor_center_xz: tuple[float, float] | None = None
+    anchor_ground_y: float | None = None
+
+
+def _rot_ypr_matrix(yaw_deg: float, pitch_deg: float, roll_deg: float) -> np.ndarray:
+    from scipy.spatial.transform import Rotation
+
+    return Rotation.from_euler(
+        "YXZ",
+        [float(yaw_deg), float(pitch_deg), float(roll_deg)],
+        degrees=True,
+    ).as_matrix()
+
+
+def load_car_glb_mesh(glb_path: Path):
+    """Load GLB and return one concatenated mesh in model space."""
+    import trimesh
+
+    glb_path = Path(glb_path)
+    if not glb_path.is_file():
+        raise FileNotFoundError(f"Car GLB not found: {glb_path}")
+
+    loaded = trimesh.load(str(glb_path), force="scene")
+    if isinstance(loaded, trimesh.Scene):
+        mesh = loaded.dump(concatenate=True)
+    else:
+        mesh = loaded
+    if mesh is None or len(mesh.vertices) == 0:
+        raise RuntimeError(f"No mesh geometry in {glb_path}")
+    return mesh
+
+
+def _mesh_vertex_colors(mesh) -> np.ndarray:
+    visual = getattr(mesh, "visual", None)
+    vcols = getattr(visual, "vertex_colors", None) if visual is not None else None
+    if vcols is not None and len(vcols) == len(mesh.vertices):
+        return np.clip(np.asarray(vcols, dtype=np.float64)[:, :3] / 255.0, 0.0, 1.0)
+    return np.full((len(mesh.vertices), 3), 0.55, dtype=np.float64)
+
+
+def normalize_car_mesh_to_ground(mesh, *, length_m: float, extra_scale: float | None = None):
+    """Center XZ at origin, put tire contact at y=0, uniform scale to target length."""
+    import trimesh
+
+    mesh = mesh.copy()
+    bounds = mesh.bounds.astype(np.float64)
+    center_x = 0.5 * (bounds[0, 0] + bounds[1, 0])
+    center_z = 0.5 * (bounds[0, 2] + bounds[1, 2])
+    bottom_y = float(bounds[1, 1])
+
+    mesh.vertices[:, 0] -= center_x
+    mesh.vertices[:, 2] -= center_z
+    mesh.vertices[:, 1] -= bottom_y
+
+    bounds = mesh.bounds
+    extents = bounds[1] - bounds[0]
+    # GLB forward axis may be X or Z; use longest ground-plane extent as "length".
+    length_extent = max(float(extents[0]), float(extents[2]), 1e-6)
+    scale = float(length_m) / length_extent
+    if extra_scale is not None and float(extra_scale) > 0.0:
+        scale *= float(extra_scale)
+    mesh.apply_scale(scale)
+    return mesh
+
+
+def effective_car_sample_spacing(length_m: float, sample_spacing: float) -> float:
+    """Scale voxel spacing with car length so small cars stay proportionally sampled."""
+    ref_len = max(float(DEFAULT_CAR_LENGTH_M), 1e-3)
+    scaled = float(sample_spacing) * (float(length_m) / ref_len)
+    return float(np.clip(scaled, 0.002, float(sample_spacing)))
+
+
+def sample_car_mesh_points(
+    mesh,
+    *,
+    sample_spacing: float,
+    length_m: float | None = None,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Voxel-downsample mesh vertices for a dense colored car point cloud."""
+    import open3d as o3d
+
+    verts = np.asarray(mesh.vertices, dtype=np.float64)
+    cols = _mesh_vertex_colors(mesh)
+    if length_m is not None:
+        sample_spacing = effective_car_sample_spacing(length_m, sample_spacing)
+    spacing = max(float(sample_spacing), 1e-4)
+
+    car_pcd = o3d.geometry.PointCloud()
+    car_pcd.points = o3d.utility.Vector3dVector(verts)
+    car_pcd.colors = o3d.utility.Vector3dVector(np.clip(cols, 0.0, 1.0))
+    car_pcd = car_pcd.voxel_down_sample(spacing)
+    pts = np.asarray(car_pcd.points, dtype=np.float64)
+    out_cols = np.asarray(car_pcd.colors, dtype=np.float64)
+    if pts.shape[0] == 0:
+        raise RuntimeError("Car mesh sampling produced zero points")
+    return pts, out_cols
+
+
+def car_glb_points_in_world(
+    config: CarGlbConfig,
+    *,
+    center_xz: tuple[float, float],
+    ground_y: float,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Load, normalize, rotate, and place car GLB points in world coordinates."""
+    mesh = load_car_glb_mesh(config.glb_path)
+    mesh = normalize_car_mesh_to_ground(
+        mesh,
+        length_m=config.length_m,
+        extra_scale=config.scale,
+    )
+    # Voxel spacing must follow the *actual* scaled size, otherwise a small
+    # ``scale`` collapses the car to a handful of points.
+    scale_factor = config.scale if (config.scale and config.scale > 0.0) else 1.0
+    effective_length_m = config.length_m * scale_factor
+    pts, cols = sample_car_mesh_points(
+        mesh,
+        sample_spacing=config.sample_spacing,
+        length_m=effective_length_m,
+    )
+
+    rot = _rot_ypr_matrix(config.yaw_deg, config.pitch_deg, config.roll_deg)
+    pts = pts @ rot.T
+
+    center_x, center_z = center_xz
+    offset = np.array(
+        [config.offset_x, config.offset_y, config.offset_z],
+        dtype=np.float64,
+    )
+    anchor = np.array([center_x, float(ground_y), center_z], dtype=np.float64) + offset
+    pts = pts + anchor
+    return pts, cols
+
+
+def merge_car_glb_into_pcd(pcd, config: CarGlbConfig | None = None):
+    """Append transformed ``car_glb.glb`` points into an Open3D point cloud."""
+    import open3d as o3d
+
+    cfg = config or CarGlbConfig()
+    if not cfg.enabled:
+        return pcd
+
+    pts = np.asarray(pcd.points, dtype=np.float64)
+    if pts.shape[0] == 0:
+        raise RuntimeError("Cannot place car on an empty point cloud")
+
+    center_xz = cfg.anchor_center_xz or estimate_scene_center_xz(pts)
+    ground_y = (
+        float(cfg.anchor_ground_y)
+        if cfg.anchor_ground_y is not None
+        else estimate_ground_y(pts, center_xz)
+    )
+
+    car_pts, car_cols = car_glb_points_in_world(cfg, center_xz=center_xz, ground_y=ground_y)
+
+    if pcd.has_colors():
+        base_cols = np.asarray(pcd.colors, dtype=np.float64)
+    else:
+        base_cols = np.full((pts.shape[0], 3), 0.6, dtype=np.float64)
+
+    out = o3d.geometry.PointCloud()
+    out.points = o3d.utility.Vector3dVector(np.vstack([pts, car_pts]))
+    out.colors = o3d.utility.Vector3dVector(np.vstack([base_cols, car_cols]))
+    car_ext = car_pts.max(axis=0) - car_pts.min(axis=0)
+    print(
+        f"Merged car GLB ({cfg.glb_path.name}): +{car_pts.shape[0]} pts at "
+        f"XZ=({center_xz[0]:.3f}, {center_xz[1]:.3f}), y={ground_y:.3f}, "
+        f"len_target={cfg.length_m:.3f}m, scale={cfg.scale}, "
+        f"bbox=({car_ext[0]:.3f}, {car_ext[1]:.3f}, {car_ext[2]:.3f})m, "
+        f"yaw={cfg.yaw_deg:.1f}°, offset=({cfg.offset_x:.2f}, {cfg.offset_y:.2f}, {cfg.offset_z:.2f})"
+    )
+    return out
+
+
+def car_glb_config_from_namespace(args) -> CarGlbConfig:
+    """Build ``CarGlbConfig`` from argparse / post-process namespace."""
+    glb = getattr(args, "car_glb", None) or getattr(args, "bev_car_glb", None)
+    return CarGlbConfig(
+        glb_path=Path(glb) if glb else DEFAULT_CAR_GLB,
+        enabled=bool(getattr(args, "add_car_glb", True)),
+        length_m=float(getattr(args, "car_length_m", DEFAULT_CAR_LENGTH_M)),
+        scale=getattr(args, "car_scale", DEFAULT_CAR_SCALE),
+        yaw_deg=float(getattr(args, "car_yaw_deg", DEFAULT_CAR_YAW_DEG)),
+        pitch_deg=float(getattr(args, "car_pitch_deg", DEFAULT_CAR_PITCH_DEG)),
+        roll_deg=float(getattr(args, "car_roll_deg", DEFAULT_CAR_ROLL_DEG)),
+        offset_x=float(getattr(args, "car_offset_x", 0.0)),
+        offset_y=float(getattr(args, "car_offset_y", 0.0)),
+        offset_z=float(getattr(args, "car_offset_z", 0.0)),
+        sample_spacing=float(getattr(args, "car_sample_spacing", DEFAULT_CAR_SAMPLE_SPACING)),
+    )
 
 
 def _load_car_rgba(car_path: Path):
@@ -329,6 +543,7 @@ def save_bev_png(
     *,
     center_xz: tuple[float, float] | None = None,
     car_png: Path | str | None = None,
+    overlay_car_png: bool = True,
     image_size: int = IMAGE_SIZE,
     point_size: float = POINT_SIZE,
     crop_percentile: float = CROP_PERCENTILE,
@@ -374,19 +589,23 @@ def save_bev_png(
         car_offset_x=car_offset_x,
     )
 
-    car_path = Path(car_png) if car_png is not None else DEFAULT_CAR_PNG
-    if car_path.is_file():
-        car_len = max(float(car_length_fraction), 0.01) * image_size
-        img = _overlay_car_icon(
-            img,
-            car_path,
-            center_u=rig_u,
-            center_v=rig_v,
-            car_length_px=car_len,
-        )
-        car_msg = f" + car {car_path.name}"
+    car_msg = ""
+    if overlay_car_png:
+        car_path = Path(car_png) if car_png is not None else DEFAULT_CAR_PNG
+        if car_path.is_file():
+            car_len = max(float(car_length_fraction), 0.01) * image_size
+            img = _overlay_car_icon(
+                img,
+                car_path,
+                center_u=rig_u,
+                center_v=rig_v,
+                car_length_px=car_len,
+            )
+            car_msg = f" + car PNG {car_path.name}"
+        else:
+            car_msg = f" (car PNG not found: {car_path})"
     else:
-        car_msg = f" (car PNG not found: {car_path})"
+        car_msg = " (car already in PLY; PNG overlay skipped)"
 
     out_path = Path(out_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)

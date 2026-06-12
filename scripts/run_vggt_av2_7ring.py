@@ -12,6 +12,7 @@ import argparse
 import json
 import os
 import sys
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -56,6 +57,37 @@ RING_CAMERAS = (
     "ring_rear_left",
     "ring_rear_right",
 )
+
+TIMING_VGGT_MODEL = "vggt_model"
+TIMING_POST_PROCESS = "post_process"
+
+
+def print_timing_analysis(
+    timings: dict[str, float],
+    *,
+    label: str = "",
+) -> None:
+    """Print high-level timing breakdown (VGGT model vs post-process)."""
+    vggt_s = timings.get(TIMING_VGGT_MODEL, 0.0)
+    post_s = timings.get(TIMING_POST_PROCESS, 0.0)
+    vggt_ms = vggt_s * 1000.0
+    post_ms = post_s * 1000.0
+    total_ms = vggt_ms + post_ms
+
+    header = "=== Timing analysis"
+    if label:
+        header += f" ({label})"
+    header += " ==="
+    print(f"\n{header}")
+    if total_ms <= 0:
+        print("  (no timed steps)")
+        return
+
+    vggt_pct = 100.0 * vggt_ms / total_ms
+    post_pct = 100.0 * post_ms / total_ms
+    print(f"  1. VGGT model time:   {vggt_ms:8.1f} ms ({vggt_pct:5.1f}%)")
+    print(f"  2. Post process time: {post_ms:8.1f} ms ({post_pct:5.1f}%)")
+    print(f"     Total:             {total_ms:8.1f} ms")
 
 
 def parse_args() -> argparse.Namespace:
@@ -247,7 +279,11 @@ def process_frame(
     args: argparse.Namespace,
     device: str,
     scene_index: int,
-) -> int:
+) -> dict[str, float]:
+    timings: dict[str, float] = {
+        TIMING_VGGT_MODEL: 0.0,
+        TIMING_POST_PROCESS: 0.0,
+    }
     views = collect_seven_ring_views(log_dir, frame_idx)
     frame_dir = out_dir / f"frame_{frame_idx:06d}"
     frame_dir.mkdir(parents=True, exist_ok=True)
@@ -288,10 +324,12 @@ def process_frame(
             label=f"frame {frame_idx}",
             dry_run=True,
         )
-        return 0
+        return timings
 
     image_paths = [path for _, path, _ in views]
+    t0 = time.perf_counter()
     pred = run_vggt_seven(image_paths, device, args.model_id)
+    timings[TIMING_VGGT_MODEL] = time.perf_counter() - t0
 
     cameras_out = {
         "extrinsic": pred["extrinsic"].tolist(),
@@ -322,11 +360,14 @@ def process_frame(
         no_cleanup=args.no_cleanup,
         label=f"frame {frame_idx}",
     )
+    t0 = time.perf_counter()
     post_path = maybe_postprocess_pointcloud(
         ply_path,
         args,
         label=f"frame {frame_idx}",
     )
+    timings[TIMING_POST_PROCESS] = time.perf_counter() - t0
+    print_timing_analysis(timings, label=f"frame {frame_idx}")
     maybe_show_pointcloud(
         ply_path,
         post_path,
@@ -342,9 +383,10 @@ def process_frame(
             "sky_keep_percentile": args.sky_keep_percentile,
             "sky_max": args.sky_max,
         }
-        with (frame_dir / "metadata.json").open("w", encoding="utf-8") as f:
-            json.dump(meta, f, indent=2, ensure_ascii=False)
-    return 0
+    meta["timing_s"] = timings
+    with (frame_dir / "metadata.json").open("w", encoding="utf-8") as f:
+        json.dump(meta, f, indent=2, ensure_ascii=False)
+    return timings
 
 
 def main() -> int:
@@ -429,10 +471,14 @@ def main() -> int:
         json.dump(run_summary, f, indent=2)
 
     status = 0
+    total_timings: dict[str, float] = {
+        TIMING_VGGT_MODEL: 0.0,
+        TIMING_POST_PROCESS: 0.0,
+    }
     for offset in range(args.num_frames):
         frame_idx = args.frame_idx + offset
         try:
-            status |= process_frame(
+            frame_timings = process_frame(
                 log_dir,
                 scene_label,
                 frame_idx,
@@ -442,6 +488,8 @@ def main() -> int:
                 device,
                 scene_index,
             )
+            for key in total_timings:
+                total_timings[key] += frame_timings.get(key, 0.0)
         except ValueError as exc:
             print(f"ERROR: {exc}", file=sys.stderr)
             return 1
@@ -451,6 +499,12 @@ def main() -> int:
 
             traceback.print_exc()
             return 1
+
+    if args.num_frames > 1:
+        print_timing_analysis(total_timings, label=f"{args.num_frames} frames")
+    run_summary["timing_s"] = total_timings
+    with (out_dir / "run_summary.json").open("w", encoding="utf-8") as f:
+        json.dump(run_summary, f, indent=2)
 
     print(f"\n[done] outputs under {out_dir} ({scene_label}, log_id={log_dir.name})")
     return status

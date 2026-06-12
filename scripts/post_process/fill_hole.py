@@ -54,11 +54,13 @@ def _car_defaults():
         DEFAULT_CAR_PITCH_DEG,
         DEFAULT_CAR_ROLL_DEG,
         DEFAULT_CAR_SAMPLE_SPACING,
+        DEFAULT_CAR_SCALE,
         DEFAULT_CAR_YAW_DEG,
     )
 
     return {
         "length_m": DEFAULT_CAR_LENGTH_M,
+        "scale": DEFAULT_CAR_SCALE,
         "yaw_deg": DEFAULT_CAR_YAW_DEG,
         "pitch_deg": DEFAULT_CAR_PITCH_DEG,
         "roll_deg": DEFAULT_CAR_ROLL_DEG,
@@ -70,7 +72,7 @@ _car_def = _car_defaults()
 add_car_glb = True
 car_glb_path = None  # default: scripts/post_process/car_glb.glb
 car_length_m = _car_def["length_m"]
-car_scale = None
+car_scale = _car_def["scale"]
 car_yaw_deg = _car_def["yaw_deg"]
 car_pitch_deg = _car_def["pitch_deg"]
 car_roll_deg = _car_def["roll_deg"]

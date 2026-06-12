@@ -40,8 +40,9 @@ CAR_OFFSET_X = 0.35       # shift car icon along world +X (meters)
 
 # GLB ego car defaults (merged into output PLY).
 DEFAULT_CAR_LENGTH_M = 5
+DEFAULT_CAR_SCALE = 0.5          # extra uniform scale after length normalization
 DEFAULT_CAR_YAW_DEG = 0.0
-DEFAULT_CAR_PITCH_DEG = 0.0
+DEFAULT_CAR_PITCH_DEG = 180.0
 DEFAULT_CAR_ROLL_DEG = 0.0
 DEFAULT_CAR_SAMPLE_SPACING = 0.15
 
@@ -53,7 +54,7 @@ class CarGlbConfig:
     glb_path: Path = DEFAULT_CAR_GLB
     enabled: bool = True
     length_m: float = DEFAULT_CAR_LENGTH_M
-    scale: float | None = None
+    scale: float | None = DEFAULT_CAR_SCALE
     yaw_deg: float = DEFAULT_CAR_YAW_DEG
     pitch_deg: float = DEFAULT_CAR_PITCH_DEG
     roll_deg: float = DEFAULT_CAR_ROLL_DEG
@@ -224,7 +225,8 @@ def merge_car_glb_into_pcd(pcd, config: CarGlbConfig | None = None):
     print(
         f"Merged car GLB ({cfg.glb_path.name}): +{car_pts.shape[0]} pts at "
         f"XZ=({center_xz[0]:.3f}, {center_xz[1]:.3f}), y={ground_y:.3f}, "
-        f"len_target={cfg.length_m:.3f}m, bbox=({car_ext[0]:.3f}, {car_ext[1]:.3f}, {car_ext[2]:.3f})m, "
+        f"len_target={cfg.length_m:.3f}m, scale={cfg.scale}, "
+        f"bbox=({car_ext[0]:.3f}, {car_ext[1]:.3f}, {car_ext[2]:.3f})m, "
         f"yaw={cfg.yaw_deg:.1f}°, offset=({cfg.offset_x:.2f}, {cfg.offset_y:.2f}, {cfg.offset_z:.2f})"
     )
     return out
@@ -237,7 +239,7 @@ def car_glb_config_from_namespace(args) -> CarGlbConfig:
         glb_path=Path(glb) if glb else DEFAULT_CAR_GLB,
         enabled=bool(getattr(args, "add_car_glb", True)),
         length_m=float(getattr(args, "car_length_m", DEFAULT_CAR_LENGTH_M)),
-        scale=getattr(args, "car_scale", None),
+        scale=getattr(args, "car_scale", DEFAULT_CAR_SCALE),
         yaw_deg=float(getattr(args, "car_yaw_deg", DEFAULT_CAR_YAW_DEG)),
         pitch_deg=float(getattr(args, "car_pitch_deg", DEFAULT_CAR_PITCH_DEG)),
         roll_deg=float(getattr(args, "car_roll_deg", DEFAULT_CAR_ROLL_DEG)),

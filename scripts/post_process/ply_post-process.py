@@ -99,6 +99,7 @@ def _apply_car_config_to_fill_hole(args: argparse.Namespace) -> None:
         DEFAULT_CAR_PITCH_DEG,
         DEFAULT_CAR_ROLL_DEG,
         DEFAULT_CAR_SAMPLE_SPACING,
+        DEFAULT_CAR_SCALE,
         DEFAULT_CAR_YAW_DEG,
     )
 
@@ -106,7 +107,7 @@ def _apply_car_config_to_fill_hole(args: argparse.Namespace) -> None:
     car_glb = getattr(args, "car_glb", None)
     fill_hole.car_glb_path = str(car_glb) if car_glb else None
     fill_hole.car_length_m = float(getattr(args, "car_length_m", DEFAULT_CAR_LENGTH_M))
-    fill_hole.car_scale = getattr(args, "car_scale", None)
+    fill_hole.car_scale = getattr(args, "car_scale", DEFAULT_CAR_SCALE)
     fill_hole.car_yaw_deg = float(getattr(args, "car_yaw_deg", DEFAULT_CAR_YAW_DEG))
     fill_hole.car_pitch_deg = float(getattr(args, "car_pitch_deg", DEFAULT_CAR_PITCH_DEG))
     fill_hole.car_roll_deg = float(getattr(args, "car_roll_deg", DEFAULT_CAR_ROLL_DEG))
@@ -254,6 +255,7 @@ def build_parser() -> argparse.ArgumentParser:
         DEFAULT_CAR_PITCH_DEG,
         DEFAULT_CAR_ROLL_DEG,
         DEFAULT_CAR_SAMPLE_SPACING,
+        DEFAULT_CAR_SCALE,
         DEFAULT_CAR_YAW_DEG,
     )
 
@@ -368,8 +370,8 @@ def build_parser() -> argparse.ArgumentParser:
     car.add_argument(
         "--car-scale",
         type=float,
-        default=None,
-        help="Extra uniform scale after --car-length-m (optional).",
+        default=DEFAULT_CAR_SCALE,
+        help="Extra uniform scale after --car-length-m; default from add_ego_car.DEFAULT_CAR_SCALE.",
     )
     car.add_argument(
         "--car-yaw-deg",
@@ -490,6 +492,7 @@ def postprocess_ply(
         DEFAULT_CAR_PITCH_DEG,
         DEFAULT_CAR_ROLL_DEG,
         DEFAULT_CAR_SAMPLE_SPACING,
+        DEFAULT_CAR_SCALE,
         DEFAULT_CAR_YAW_DEG,
     )
 
@@ -497,6 +500,8 @@ def postprocess_ply(
         bev_overlay_car_png = not add_car_glb
     if car_length_m is None:
         car_length_m = DEFAULT_CAR_LENGTH_M
+    if car_scale is None:
+        car_scale = DEFAULT_CAR_SCALE
     if car_yaw_deg is None:
         car_yaw_deg = DEFAULT_CAR_YAW_DEG
     if car_pitch_deg is None:

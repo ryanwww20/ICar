@@ -173,10 +173,14 @@ def car_glb_points_in_world(
         length_m=config.length_m,
         extra_scale=config.scale,
     )
+    # Voxel spacing must follow the *actual* scaled size, otherwise a small
+    # ``scale`` collapses the car to a handful of points.
+    scale_factor = config.scale if (config.scale and config.scale > 0.0) else 1.0
+    effective_length_m = config.length_m * scale_factor
     pts, cols = sample_car_mesh_points(
         mesh,
         sample_spacing=config.sample_spacing,
-        length_m=config.length_m,
+        length_m=effective_length_m,
     )
 
     rot = _rot_ypr_matrix(config.yaw_deg, config.pitch_deg, config.roll_deg)

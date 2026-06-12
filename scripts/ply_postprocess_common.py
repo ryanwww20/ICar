@@ -68,6 +68,7 @@ def add_postprocess_args(parser: argparse.ArgumentParser) -> None:
         DEFAULT_CAR_PITCH_DEG,
         DEFAULT_CAR_ROLL_DEG,
         DEFAULT_CAR_SAMPLE_SPACING,
+        DEFAULT_CAR_SCALE,
         DEFAULT_CAR_YAW_DEG,
     )
 
@@ -165,8 +166,8 @@ def add_postprocess_args(parser: argparse.ArgumentParser) -> None:
     group.add_argument(
         "--car-scale",
         type=float,
-        default=None,
-        help="Extra uniform scale after --car-length-m.",
+        default=DEFAULT_CAR_SCALE,
+        help="Extra uniform scale after --car-length-m; default from add_ego_car.DEFAULT_CAR_SCALE.",
     )
     group.add_argument(
         "--car-yaw-deg",

@@ -24,3 +24,6 @@ vggt_sixview_scene.py
 
 .cache/
 car_glb.glb
+*.png
+*.glb
+*.ply

@@ -60,6 +60,17 @@ def postprocessed_output_path(ply_path: Path) -> Path:
 
 
 def add_postprocess_args(parser: argparse.ArgumentParser) -> None:
+    post_dir = str(POST_PROCESS_DIR)
+    if post_dir not in sys.path:
+        sys.path.insert(0, post_dir)
+    from add_ego_car import (
+        DEFAULT_CAR_LENGTH_M,
+        DEFAULT_CAR_PITCH_DEG,
+        DEFAULT_CAR_ROLL_DEG,
+        DEFAULT_CAR_SAMPLE_SPACING,
+        DEFAULT_CAR_YAW_DEG,
+    )
+
     group = parser.add_argument_group("PLY post-processing")
     group.add_argument(
         "--post-process",
@@ -127,6 +138,78 @@ def add_postprocess_args(parser: argparse.ArgumentParser) -> None:
         default=0.11,
         help="Car icon length as a fraction of BEV image size (default: 0.11).",
     )
+    group.add_argument(
+        "--add-car-glb",
+        dest="add_car_glb",
+        action="store_true",
+        help="Merge car_glb.glb into post-processed PLY (default: on).",
+    )
+    group.add_argument(
+        "--no-add-car-glb",
+        dest="add_car_glb",
+        action="store_false",
+        help="Skip merging car GLB into PLY.",
+    )
+    group.add_argument(
+        "--car-glb",
+        type=Path,
+        default=None,
+        help="Ego car GLB path (default: scripts/post_process/car_glb.glb).",
+    )
+    group.add_argument(
+        "--car-length-m",
+        type=float,
+        default=DEFAULT_CAR_LENGTH_M,
+        help="Target car length (m); default from add_ego_car.DEFAULT_CAR_LENGTH_M.",
+    )
+    group.add_argument(
+        "--car-scale",
+        type=float,
+        default=None,
+        help="Extra uniform scale after --car-length-m.",
+    )
+    group.add_argument(
+        "--car-yaw-deg",
+        type=float,
+        default=DEFAULT_CAR_YAW_DEG,
+        help="Car yaw about world +Y (degrees).",
+    )
+    group.add_argument(
+        "--car-pitch-deg",
+        type=float,
+        default=DEFAULT_CAR_PITCH_DEG,
+        help="Car pitch about world +X (degrees).",
+    )
+    group.add_argument(
+        "--car-roll-deg",
+        type=float,
+        default=DEFAULT_CAR_ROLL_DEG,
+        help="Car roll about world +Z (degrees).",
+    )
+    group.add_argument(
+        "--car-offset-x",
+        type=float,
+        default=0.0,
+        help="Car world +X offset from rig center (meters).",
+    )
+    group.add_argument(
+        "--car-offset-y",
+        type=float,
+        default=0.0,
+        help="Car world +Y offset from ground (meters).",
+    )
+    group.add_argument(
+        "--car-offset-z",
+        type=float,
+        default=0.0,
+        help="Car world +Z offset from rig center (meters).",
+    )
+    group.add_argument(
+        "--car-sample-spacing",
+        type=float,
+        default=DEFAULT_CAR_SAMPLE_SPACING,
+        help="Base voxel spacing for car mesh (scales with --car-length-m).",
+    )
 
     vis = parser.add_argument_group("Point cloud visualization")
     vis.add_argument(
@@ -148,7 +231,7 @@ def add_postprocess_args(parser: argparse.ArgumentParser) -> None:
         help="Size of XYZ axes in the viewer (0 to hide).",
     )
 
-    parser.set_defaults(post_process=True, visualize=True, export_bev=True)
+    parser.set_defaults(post_process=True, visualize=True, export_bev=True, add_car_glb=True)
 
 
 def maybe_postprocess_pointcloud(
@@ -192,6 +275,17 @@ def maybe_postprocess_pointcloud(
         export_bev=args.export_bev,
         bev_car_png=args.bev_car_png,
         bev_car_length_fraction=args.bev_car_length_fraction,
+        add_car_glb=args.add_car_glb,
+        car_glb=args.car_glb,
+        car_length_m=args.car_length_m,
+        car_scale=args.car_scale,
+        car_yaw_deg=args.car_yaw_deg,
+        car_pitch_deg=args.car_pitch_deg,
+        car_roll_deg=args.car_roll_deg,
+        car_offset_x=args.car_offset_x,
+        car_offset_y=args.car_offset_y,
+        car_offset_z=args.car_offset_z,
+        car_sample_spacing=args.car_sample_spacing,
         visualize=False,
     )
     print(f"[{label}] post-processed point cloud -> {out_path}")
